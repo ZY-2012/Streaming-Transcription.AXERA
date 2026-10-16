@@ -70,7 +70,7 @@ canvas{width:100%;height:200px;background:#fff;border:1px solid var(--border);bo
       <div class="pitem"><label for="preview">快字间隔</label>
         <select id="preview" title="无说话人的快速文字：每攒这么多秒有声就出一条 [起,止]: 文字，比说话人+文字快得多，但无说话人且切片处偶有糊字；说话人+文字出来后以其为准"><option value="0" selected>关</option><option value="3">3s</option><option value="2">2s</option><option value="1">1s</option></select></div>
       <div class="pitem"><label for="tick">实时文字</label>
-        <select id="tick" title="固定节拍实时文本：以停顿划分「句段」（词安全切点），段内每过这么多秒就把整段重新转写一次，用连续两次一致的最长前缀当已确认文字（黑色），其余先灰色显示等下一拍确认；独白不停也能持续出字，替代「快字间隔」的暂停门控"><option value="0" selected>关</option><option value="0.8">0.8s</option><option value="0.5">0.5s</option><option value="1.2">1.2s</option></select></div>
+        <select id="tick" title="固定节拍实时文本：以停顿划分「句段」（词安全切点），段内每过这么多秒就把整段重新转写一次，用连续两次一致的最长前缀当已确认文字（黑色），其余先灰色显示等下一拍确认；独白不停也能持续出字，替代「快字间隔」的暂停门控"><option value="0">关</option><option value="0.8" selected>0.8s</option><option value="0.5">0.5s</option><option value="1.2">1.2s</option></select></div>
       <div class="pitem"><label class="chk" style="margin-top:22px"><input type="checkbox" id="typer" checked> 同步播放（音频与文字同步）</label></div>
     </div>
   </details>

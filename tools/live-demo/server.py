@@ -257,7 +257,7 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = start(q.get("input", ["vad"])[0], q.get("onset", ["0.5"])[0],
                             q.get("maxseg", ["3"])[0], q.get("psplit", ["2"])[0],
                             q.get("preview", ["2"])[0], q.get("trail", ["0.5"])[0],
-                            q.get("tick", ["0"])[0])
+                            q.get("tick", ["0.8"])[0])
             self.send_json({"ok": ok, "msg": msg}, 200 if ok else 409)
         elif u.path == "/stop":
             ok, msg = stop()
