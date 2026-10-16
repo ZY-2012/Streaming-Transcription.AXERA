@@ -1,0 +1,107 @@
+audio:
+  playback:
+    device: hw:0,0
+    sample_rate_hz: 48000
+    channels: 2
+  capture:
+    device: hw:2,0
+    sample_rate_hz: 48000
+    channels: 2
+buffers:
+  period_ms: 10
+  alsa_buffer_ms: 50
+  application_buffer_ms: 1000
+apm:
+  aec:
+    enabled: false
+    mode: aec3
+    multi_channel_render: true
+    multi_channel_capture: true
+  delay:
+    base_ms: 0
+  ns:
+    enabled: true
+    level: high
+  agc1:
+    enabled: true
+    mode: fixed_digital
+    target_level_dbfs: 3
+    compression_gain_db: 9
+    limiter: true
+  agc2:
+    enabled: false
+    fixed_gain_db: 0.0
+    adaptive_digital: true
+    adaptive_headroom_db: 5.0
+    adaptive_max_gain_db: 50.0
+    adaptive_initial_gain_db: 15.0
+    adaptive_max_gain_change_db_per_second: 6.0
+    adaptive_max_output_noise_level_dbfs: -50.0
+  gain_adjustment:
+    enabled: true
+    pre_gain_factor: 1.0
+    post_gain_factor: 1.0
+  high_pass_filter_enabled: true
+fastenhance:
+  enabled: true
+  model_path: models-for-asr-chain/ns/fastenhance/fastenhance_48k.axmodel
+  npu_core: 0
+  monitor_enabled: false
+  library: build/libfastenhance.so
+vad:
+  enabled: true
+  model_path: models-for-asr-chain/vad/ten-vad/ten-vad.axmodel
+  library: driver/vad/lib/libten_vad.so
+  npu_core: 0
+  input_buffer_ms: 2000
+  hop_ms: 16
+  threshold: 0.3
+  min_speech_ms: 615
+  min_segment_seconds: 1.0
+  max_segment_seconds: 10.0
+  preview_seconds: 3.0
+  pause_split_seconds: 0.0
+  stream_tick_seconds: 0.0
+  stream_pause_seconds: 0.2
+  stream_epoch_max_seconds: 12.0
+  trailing_silence_seconds: 1.0
+diarization:
+  enabled: true
+  logging_enabled: false
+  runner: build/diar-worker
+  model_path: models-for-asr-chain/pyannote
+  speaker_table_path: output/speakers.json
+  speaker_match_threshold: 0.55
+  step_sec: 2.0
+  omp_threads: 4
+  mode: session
+  session_chunk_sec: 10
+  session_step_sec: 10
+  session_max_wait_sec: 180
+  incremental: true
+  incremental_plda: false
+  incremental_delta_new: 0.5
+  incremental_delta_min: 0.75
+  incremental_rho_update: 0.4
+asr:
+  enabled: true
+  model_path: models-for-asr-chain/asr
+  model_type: sensevoice
+  language: zh
+  library: driver/asr/sensevoice/lib/libax_asr_api.so
+  npu_core: 1
+  worker_threads: 1
+output:
+  temp_dir: output/segments
+  text_file: output/transcript.txt
+  mp3_dir: output/mp3
+  max_mp3_storage_mb: 512
+  mp3_encoder: ffmpeg
+runtime:
+  input: file
+  input_wav: samples/2P_meeting_60s.wav
+  file_input_mode: realtime
+  apm_binary: build/run-alsa-apm
+  npu_lock_file: output/npu2.lock
+  playback_enabled: false
+  log_level: info
