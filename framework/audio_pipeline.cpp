@@ -821,6 +821,12 @@ bool WriteParts(const fs::path& wav, const std::vector<Segment::Part>& parts) {
 // 418 -> 236 parts, v8 agreement 91.6% -> 91.5%; T3 conf is unchanged up to
 // 0.3 s and degrades beyond it (threshold sweep in the eval assets).
 constexpr std::size_t kMinPartSamples = kRateOut * 3 / 10;  // 0.3 s
+// A closed speaker part is released once the timeline frontier passes its end
+// by this margin.  Provisional (open-run) parts always end at the frontier,
+// so they can never satisfy it and are only released after closing; for
+// closed parts a later same-speaker merge only extends the end, and the
+// released prefix is clamped by `done`, so a small margin is safe.
+constexpr std::size_t kPartReleaseMargin = kRateOut / 10;  // 0.1 s
 
 // Concatenated (voiced-only) offset -> absolute source offset via `runs`.
 // `is_end` maps an exclusive end so it never jumps into the next run.
@@ -2345,10 +2351,21 @@ class NemotronStreamDiarizer {
         // between keeps the previous state.
         if (p > onset_ || p < offset_) run.on = p > onset_;
         if (run.on) {
-          if (run.start == kNoFrame) run.start = frame;
+          if (run.start == kNoFrame) {
+            run.start = frame;
+            open_part_[static_cast<std::size_t>(s)] = PushPartNoLock(s, frame);
+          }
+          // An ongoing run is exposed as a provisional part that grows with
+          // the frontier.  Without this the timeline's leading edge has no
+          // entry yet, and MapTimelineToTrimmed would inherit the label of
+          // the *previous* speaker for the newest audio (mislabeling the
+          // opening of a new speaker's turn, or dropping it entirely when
+          // the timeline was empty there).
+          timeline_[open_part_[static_cast<std::size_t>(s)]].end =
+              (frame + 1) * kFrameSamples;
         } else if (run.start != kNoFrame) {
-          PushPartNoLock(s, run.start, frame);
           run.start = kNoFrame;
+          open_part_[static_cast<std::size_t>(s)] = kNoFrame;
         }
       }
       frames_received_ = frame + 1;
@@ -2356,55 +2373,67 @@ class NemotronStreamDiarizer {
     committed_ = frames_received_ * kFrameSamples;
     // Live-demo event: same shape as the pyannote session "diar" events
     // (core = [prev, committed] seconds, parts = newly closed speaker runs)
-    // so tools/live-demo renders the streaming timeline unchanged.
+    // so tools/live-demo renders the streaming timeline unchanged.  Parts
+    // still being extended by an open run are held back until they close.
     {
       std::string body = "\"core\":[" + EventLog::Sec(event_prev_committed_, kRateOut) +
                          "," + EventLog::Sec(committed_, kRateOut) + "],\"parts\":[";
-      for (std::size_t i = event_parts_sent_; i < timeline_.size(); ++i) {
-        if (i > event_parts_sent_) body += ",";
-        const Segment::Part& part = timeline_[i];
+      bool first = true;
+      while (event_parts_sent_ < timeline_.size() &&
+             !IsOpenPartNoLock(event_parts_sent_)) {
+        if (!first) body += ",";
+        first = false;
+        const Segment::Part& part = timeline_[event_parts_sent_];
         body += "[" + EventLog::Sec(part.begin, kRateOut) + "," +
                 EventLog::Sec(part.end, kRateOut) + "," +
                 EventLog::Quote(part.speaker_id) + "]";
+        ++event_parts_sent_;
       }
-      event_parts_sent_ = timeline_.size();
       event_prev_committed_ = committed_;
       EventLog::Get().Write("diar", body + "]");
     }
     ready_.notify_all();
   }
 
-  void CloseOpenPartsNoLock(std::size_t end_frame) {
+  void CloseOpenPartsNoLock(std::size_t /*end_frame*/) {
+    // Open runs are already exposed in the timeline with their final end
+    // (extended per frame); only the run bookkeeping needs resetting.
     for (int s = 0; s < kSpeakers; ++s) {
       SpeakerRun& run = runs_[static_cast<std::size_t>(s)];
-      if (run.start != kNoFrame) {
-        PushPartNoLock(s, run.start, end_frame);
-        run.start = kNoFrame;
-      }
+      run.start = kNoFrame;
       run.on = false;
+      open_part_[static_cast<std::size_t>(s)] = kNoFrame;
     }
   }
 
-  void PushPartNoLock(int speaker, std::size_t begin_frame,
-                      std::size_t end_frame) {
-    if (end_frame <= begin_frame) return;
+  bool IsOpenPartNoLock(std::size_t index) const {
+    for (std::size_t s = 0; s < kSpeakers; ++s)
+      if (open_part_[s] == index) return true;
+    return false;
+  }
+
+  // Opens a provisional part for a run starting at begin_frame, merging with
+  // the speaker's previous part when the silence gap is short; returns the
+  // timeline index.  The caller extends .end while the run stays on.
+  std::size_t PushPartNoLock(int speaker, std::size_t begin_frame) {
     const std::size_t begin = begin_frame * kFrameSamples;
-    const std::size_t end = end_frame * kFrameSamples;
-    const std::size_t last = last_part_[static_cast<std::size_t>(speaker)];
+    const std::size_t spk = static_cast<std::size_t>(speaker);
+    const std::size_t last = last_part_[spk];
     // Merge with the speaker's previous run when the silence gap between the
     // two is short; per-speaker last-part index keeps this O(1) and timeline_
     // never erases, so indices stay valid.
     if (last != kNoFrame && last < timeline_.size() &&
         timeline_[last].end + kMergeGapFrames * kFrameSamples >= begin) {
-      timeline_[last].end = std::max(timeline_[last].end, end);
-      return;
+      timeline_[last].end = std::max(timeline_[last].end, begin);
+      return last;
     }
     Segment::Part part;
     part.begin = begin;
-    part.end = end;
+    part.end = begin;
     part.speaker_id = "speaker_" + std::to_string(speaker);
-    last_part_[static_cast<std::size_t>(speaker)] = timeline_.size();
+    last_part_[spk] = timeline_.size();
     timeline_.push_back(std::move(part));
+    return timeline_.size() - 1;
   }
 
   struct SpeakerRun {
@@ -2430,6 +2459,8 @@ class NemotronStreamDiarizer {
   std::size_t event_prev_committed_ = 0;
   std::vector<SpeakerRun> runs_{static_cast<std::size_t>(kSpeakers)};
   std::vector<std::size_t> last_part_{static_cast<std::size_t>(kSpeakers),
+                                      kNoFrame};
+  std::vector<std::size_t> open_part_{static_cast<std::size_t>(kSpeakers),
                                       kNoFrame};
 
   std::mutex write_mutex_;                   // PCM feeding state
@@ -2778,7 +2809,7 @@ class ResultWorker {
       }
       const std::size_t cut = ConcatCoveredBySource(s.runs, frontier, n);
       for (std::size_t i = 0; i + 1 < parts.size(); ++i) {
-        if (parts[i].end + kMinPartSamples > cut) break;
+        if (parts[i].end + kPartReleaseMargin > cut) break;
         release(parts[i].begin, parts[i].end, parts[i].speaker_id);
       }
       const auto now = Clock::now();

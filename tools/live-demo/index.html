@@ -64,9 +64,9 @@ canvas{width:100%;height:200px;background:#fff;border:1px solid var(--border);bo
       <div class="pitem"><label for="trail">句尾静音</label>
         <select id="trail" title="VAD 判定「一句话说完」要等的尾静音长度；越短出结果越快，太短容易把思考停顿当句尾"><option value="1">1s</option><option value="0.5" selected>0.5s</option></select></div>
       <div class="pitem"><label for="maxseg">段长上限</label>
-        <select id="maxseg" title="VAD 段攒满多少秒有声就强制切段；段越短文字出得越勤"><option value="10">10s</option><option value="5" selected>5s</option></select></div>
+        <select id="maxseg" title="VAD 段攒满多少秒有声就强制切段；段越短文字出得越勤"><option value="10">10s</option><option value="5">5s</option><option value="3" selected>3s</option></select></div>
       <div class="pitem"><label for="psplit">静音切分</label>
-        <select id="psplit" title="段内攒够这么多秒有声后，遇到 0.3s 以上的自然停顿就成段；切点落在停顿上，比强制切分更保字"><option value="0">关</option><option value="4" selected>4s</option></select></div>
+        <select id="psplit" title="段内攒够这么多秒有声后，遇到 0.3s 以上的自然停顿就成段；切点落在停顿上，比强制切分更保字"><option value="0">关</option><option value="3">3s</option><option value="2" selected>2s</option></select></div>
       <div class="pitem"><label for="preview">快字间隔</label>
         <select id="preview" title="无说话人的快速文字：每攒这么多秒有声就出一条 [起,止]: 文字，比说话人+文字快得多，但无说话人且切片处偶有糊字；说话人+文字出来后以其为准"><option value="0" selected>关</option><option value="3">3s</option><option value="2">2s</option><option value="1">1s</option></select></div>
       <div class="pitem"><label for="tick">实时文字</label>
