@@ -69,6 +69,7 @@ diarization:
     runner: build/stream-diar-worker
     model_dir: models-for-asr-chain/nemotron
     preset: lowlat            # ~0.8 s input buffer; offline = 30.4 s
+    variant: npu2             # BIG_LITTLE 链路用 npu2 模型；npu3 仅单机 DISABLE 验证
     threads: 8
     onset: 0.5
     offset: 0.5

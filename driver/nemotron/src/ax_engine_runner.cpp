@@ -16,6 +16,13 @@ void check_ax(AX_S32 ret, const char* what) {
 
 // AX_SYS_Init/AX_ENGINE_Init are process-global; two runners (preencode +
 // encoder) must share them, so reference-count the init/deinit pair.
+//
+// The VNPU mode is device-global and mutually exclusive across processes:
+// when the transcription pipeline (BIG_LITTLE) is already running, a
+// DISABLE-mode init fails with 0x80060087.  Try DISABLE first (upstream
+// standalone behaviour, required by NPU3-compiled models) and fall back to
+// BIG_LITTLE so NPU2-compiled models coexist with the pipeline — the same
+// fallback the pyannote EngineWrapper uses.
 std::mutex g_init_mutex;
 int g_init_count = 0;
 
@@ -26,7 +33,23 @@ void engine_init_shared() {
         std::memset(&attr, 0, sizeof(attr));
         attr.eHardMode = AX_ENGINE_VIRTUAL_NPU_DISABLE;
         check_ax(AX_SYS_Init(), "AX_SYS_Init");
-        check_ax(AX_ENGINE_Init(&attr), "AX_ENGINE_Init");
+        AX_S32 ret = AX_ENGINE_Init(&attr);
+        if (ret != 0) {
+            std::fprintf(stderr,
+                         "ax_engine_runner: VNPU DISABLE init failed (0x%x); "
+                         "retrying with BIG_LITTLE\n",
+                         static_cast<unsigned>(ret));
+            std::memset(&attr, 0, sizeof(attr));
+            attr.eHardMode = AX_ENGINE_VIRTUAL_NPU_BIG_LITTLE;
+            ret = AX_ENGINE_Init(&attr);
+            if (ret != 0) {
+                AX_SYS_Deinit();
+                throw std::runtime_error("AX_ENGINE_Init failed with both VNPU "
+                                         "DISABLE and BIG_LITTLE modes: 0x" +
+                                         std::to_string(static_cast<unsigned>(ret)));
+            }
+            std::fprintf(stderr, "ax_engine_runner: AX Engine mode=BIG_LITTLE (2+1)\n");
+        }
     }
     g_init_count++;
 }
@@ -61,20 +84,24 @@ AxEngineRunner::AxEngineRunner(const std::string& model_path) : impl_(new Impl) 
     impl_->model.resize(static_cast<size_t>(size));
     file.read(impl_->model.data(), size);
 
-    AX_ENGINE_NPU_ATTR_T attr;
-    std::memset(&attr, 0, sizeof(attr));
-    attr.eHardMode = AX_ENGINE_VIRTUAL_NPU_DISABLE;
-
     try {
         // AX_SYS_Init must precede AX_ENGINE_Init or the latter returns an error.
         engine_init_shared();
         impl_->engine_ready = true;
 
         check_ax(AX_ENGINE_CreateHandle(&impl_->handle, impl_->model.data(),
-                                        static_cast<AX_U32>(impl_->model.size())),
+                                         static_cast<AX_U32>(impl_->model.size())),
                  "AX_ENGINE_CreateHandle");
         check_ax(AX_ENGINE_CreateContext(impl_->handle), "AX_ENGINE_CreateContext");
         check_ax(AX_ENGINE_GetIOInfo(impl_->handle, &impl_->info), "AX_ENGINE_GetIOInfo");
+        // NPU2-compiled models live on the BIG partition under BIG_LITTLE
+        // (affinity 0x1, the same slot SenseVoice binds); best-effort, a
+        // DISABLE-mode device keeps all cores and ignores this.
+        if (!set_affinity(0x1))
+            std::fprintf(stderr, "ax_engine_runner: affinity 0x1 binding failed for %s\n",
+                         model_path.c_str());
+        std::fprintf(stderr, "ax_engine_runner: %s model_type=%d affinity=0x%x\n",
+                     model_path.c_str(), model_type(), affinity());
 
         const AX_U32 n_in = impl_->info->nInputSize;
         const AX_U32 n_out = impl_->info->nOutputSize;

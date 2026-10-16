@@ -220,6 +220,12 @@ struct AppConfig {
       // "lowlat": ~0.8 s input buffer, real streaming (recommended).
       // "offline": 30.4 s buffer, best accuracy, high label latency.
       std::string preset = "lowlat";
+      // Pulsar2 compile target of the deployed axmodels, selected by the
+      // file-name suffix: "npu2" -> {preencode,encoder}{_lowlat?}_npu2.axmodel
+      // (loads under VNPU BIG_LITTLE alongside the pipeline, the default for
+      // the full chain), "npu3" -> no suffix (VNPU DISABLE only, standalone
+      // validation).
+      std::string variant = "npu2";
       // Host mel-FFT worker threads inside the diarization worker.
       int threads = 8;
       // Frame-probability binarization thresholds for the timeline (NeMo

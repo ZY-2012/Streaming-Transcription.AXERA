@@ -300,6 +300,8 @@ bool ValidateAppConfig(const AppConfig& c, std::string* error) {
   if (c.diarization.engine == "nemotron") {
     if ((c.diarization.nemotron.preset != "lowlat" &&
          c.diarization.nemotron.preset != "offline") ||
+        (c.diarization.nemotron.variant != "npu2" &&
+         c.diarization.nemotron.variant != "npu3") ||
         c.diarization.nemotron.threads < 1 ||
         c.diarization.nemotron.threads > 64 ||
         c.diarization.nemotron.onset <= 0.0f ||
@@ -445,7 +447,8 @@ bool LoadAppConfig(const std::string& path,
       "diarization.mode", "diarization.engine",
       "diarization.runner", "diarization.model_path",
       "diarization.nemotron.runner", "diarization.nemotron.model_dir",
-      "diarization.nemotron.preset", "diarization.nemotron.threads",
+      "diarization.nemotron.preset", "diarization.nemotron.variant",
+      "diarization.nemotron.threads",
       "diarization.nemotron.onset", "diarization.nemotron.offset",
       "diarization.speaker_table_path", "diarization.speaker_match_threshold",
       "diarization.step_sec", "diarization.omp_threads",
@@ -545,6 +548,7 @@ bool LoadAppConfig(const std::string& path,
   GET_STRING("diarization.nemotron.runner", c->diarization.nemotron.runner);
   GET_STRING("diarization.nemotron.model_dir", c->diarization.nemotron.model_dir);
   GET_STRING("diarization.nemotron.preset", c->diarization.nemotron.preset);
+  GET_STRING("diarization.nemotron.variant", c->diarization.nemotron.variant);
   GET_NUM("diarization.nemotron.threads", c->diarization.nemotron.threads);
   GET_NUM("diarization.nemotron.onset", c->diarization.nemotron.onset);
   GET_NUM("diarization.nemotron.offset", c->diarization.nemotron.offset);

@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<title>渐进式实时转写 · 说话人分离 + ASR 演示</title>
+<title>真流式实时转写 · 端到端说话人分离 + ASR 演示</title>
 <style>
 :root{--bg:#f5f7fa;--card:#fff;--border:#e4e9f0;--ink:#1c2333;--muted:#7c8698;--accent:#2563eb}
 *{box-sizing:border-box}
@@ -43,14 +43,14 @@ canvas{width:100%;height:200px;background:#fff;border:1px solid var(--border);bo
 </style>
 </head>
 <body>
-<h1>渐进式实时转写 <span class="sub">实时字幕 · 说话人分离 · AX650N</span></h1>
+<h1>真流式实时转写 <span class="sub">说话人标签 ~1s · 端到端流式分离 · AX650N</span></h1>
 <div id="controls" class="card">
   <div id="bar">
     <button id="startBtn" class="btn">▶ 开始</button>
     <button id="stopBtn" class="btn">■ 停止</button>
     <div class="sep"></div>
     <label for="input">音频</label>
-    <select id="input"><option value="60">2P 前 60s</option><option value="full" selected>2P 全片 33 分钟</option></select>
+    <select id="input"><option value="vad" selected>vad_example 70s</option><option value="2p">2P 会议全片 33 分钟</option></select>
     <button id="upBtn" class="btn" title="上传任意格式音频，浏览器自动转成 16k 单声道 WAV">＋ 上传音频</button>
     <input type="file" id="upFile" accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg,.aac" hidden>
     <label class="chk"><input type="checkbox" id="mute"> 静音</label>
@@ -59,8 +59,8 @@ canvas{width:100%;height:200px;background:#fff;border:1px solid var(--border);bo
   <details id="params">
     <summary>参数设置</summary>
     <div class="pgrid">
-      <div class="pitem"><label for="step">提交步长</label>
-        <select id="step" title="diar 窗口始终 10s；步长决定每几秒提交一次最右侧的新音频"><option value="10">10s（现状）</option><option value="2">2s（方案A）</option><option value="1" selected>1s（最快）</option></select></div>
+      <div class="pitem"><label for="onset">说话人阈值</label>
+        <select id="onset" title="端到端流式分离的帧概率阈值：高于该值才计入某说话人的活动区间。0.5 为模型标准值；调低更灵敏（易碎句）、调高更保守（易漏说）"><option value="0.5" selected>0.5（标准）</option><option value="0.4">0.4（灵敏）</option><option value="0.6">0.6（保守）</option></select></div>
       <div class="pitem"><label for="trail">句尾静音</label>
         <select id="trail" title="VAD 判定「一句话说完」要等的尾静音长度；越短出结果越快，太短容易把思考停顿当句尾"><option value="1">1s</option><option value="0.5" selected>0.5s</option></select></div>
       <div class="pitem"><label for="maxseg">段长上限</label>
@@ -70,7 +70,7 @@ canvas{width:100%;height:200px;background:#fff;border:1px solid var(--border);bo
       <div class="pitem"><label for="preview">快字间隔</label>
         <select id="preview" title="无说话人的快速文字：每攒这么多秒有声就出一条 [起,止]: 文字，比说话人+文字快得多，但无说话人且切片处偶有糊字；说话人+文字出来后以其为准"><option value="0" selected>关</option><option value="3">3s</option><option value="2">2s</option><option value="1">1s</option></select></div>
       <div class="pitem"><label for="tick">实时文字</label>
-        <select id="tick" title="固定节拍实时文本：以停顿划分「句段」（词安全切点），段内每过这么多秒就把整段重新转写一次，用连续两次一致的最长前缀当已确认文字（黑色），其余先灰色显示等下一拍确认；独白不停也能持续出字，替代「快字间隔」的暂停门控"><option value="0">关（用旧快字）</option><option value="0.8" selected>0.8s</option><option value="0.5">0.5s</option><option value="1.2">1.2s</option></select></div>
+        <select id="tick" title="固定节拍实时文本：以停顿划分「句段」（词安全切点），段内每过这么多秒就把整段重新转写一次，用连续两次一致的最长前缀当已确认文字（黑色），其余先灰色显示等下一拍确认；独白不停也能持续出字，替代「快字间隔」的暂停门控"><option value="0" selected>关</option><option value="0.8">0.8s</option><option value="0.5">0.5s</option><option value="1.2">1.2s</option></select></div>
       <div class="pitem"><label class="chk" style="margin-top:22px"><input type="checkbox" id="typer" checked> 同步播放（音频与文字同步）</label></div>
     </div>
   </details>
@@ -410,7 +410,7 @@ $('startBtn').onclick = async () => {
   const input = $('input').value; reset();
   $('status').textContent = '启动中…';
   // 1) tell the board to start FIRST: model loading begins immediately
-  const startP = fetch('/start?input=' + encodeURIComponent(input) + '&step=' + $('step').value + '&maxseg=' + $('maxseg').value + '&psplit=' + $('psplit').value + '&preview=' + $('preview').value + '&trail=' + $('trail').value + '&tick=' + $('tick').value, {method: 'POST'})
+  const startP = fetch('/start?input=' + encodeURIComponent(input) + '&onset=' + $('onset').value + '&maxseg=' + $('maxseg').value + '&psplit=' + $('psplit').value + '&preview=' + $('preview').value + '&trail=' + $('trail').value + '&tick=' + $('tick').value, {method: 'POST'})
     .then(r => r.json()).catch(() => ({ok: false, msg: '启动请求失败'}));
   // 2) once /start confirms, attach SSE right away: the「加载模型中… X s」
   //    status shows while the audio is still being fetched below.

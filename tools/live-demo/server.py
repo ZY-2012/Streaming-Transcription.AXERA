@@ -23,22 +23,26 @@ from urllib.parse import urlparse, parse_qs
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 HERE = os.path.dirname(os.path.abspath(__file__))
-TEMPLATE = os.path.join(REPO, "config/meeting-transcribe.yaml")
+# True-streaming template: end-to-end streaming Sortformer diarization
+# (diarization.engine: nemotron) with ~1 s speaker-label latency.
+TEMPLATE = os.path.join(REPO, "config/streaming-meeting.yaml")
 # Run workspace: intermediates (segments, events, lock, config) land here.
 WORK = os.path.join(REPO, "runs")
 EVENTS = os.path.join(WORK, "events.jsonl")
 LOG = os.path.join(WORK, "run.log")
+# Default demo inputs.
 INPUTS = {
-    "60": os.path.join(REPO, "samples/2P_meeting_60s.wav"),
-    # optional longer meeting; drop any 16k mono WAV here to enable "full"
-    "full": os.path.join(REPO, "samples/2P_meeting_full.wav"),
+    "vad": os.path.join(REPO, "samples/vad_example.wav"),      # 70 s, 16 kHz
+    "2p": os.path.join(REPO, "samples/20200327_2P.wav"),        # 33 min, 8 kHz
 }
 # Browser-uploaded custom audio lands here (16 kHz mono WAV, transcoded in
 # the browser so the board only ever receives clean PCM WAV).
 UPLOAD_DIR = os.path.join(REPO, "uploads")
 UPLOAD_LIMIT = 300 * 1024 * 1024
+# Reference labels exist for the opening of the 2P meeting only.
 REF_RTTM = os.path.join(REPO, "samples/reference.rttm")
-STEPS = ["10", "2", "1"]
+REF_KEYS = {"2p"}
+ONSETS = ["0.4", "0.5", "0.6"]
 MAXSEGS = ["10", "5"]
 PSPLITS = ["0", "4", "3"]
 PREVIEWS = ["0", "3", "2", "1"]
@@ -61,13 +65,16 @@ def inputs():
     return d
 
 
-def make_config(wav, step, maxseg, psplit, preview, trail, tick):
+def make_config(wav, onset, maxseg, psplit, preview, trail, tick):
     text = open(TEMPLATE, encoding="utf-8").read()
     # The template stores all run products under the relative "output/" tree;
     # redirect every run into the dedicated WORK directory.
     text = text.replace("output/", WORK + "/")
     text = re.sub(r"input_wav: .*", "input_wav: %s" % wav, text)
-    text = re.sub(r"session_step_sec: .*", "session_step_sec: %s" % step, text)
+    # Streaming Sortformer frame-probability threshold (onset == offset keeps
+    # the plain-threshold behaviour; the config validator wants 0 < off <= on).
+    text = re.sub(r"onset: .*", "onset: %s" % onset, text)
+    text = re.sub(r"offset: .*", "offset: %s" % onset, text)
     text = re.sub(r"max_segment_seconds: .*", "max_segment_seconds: %s" % maxseg, text)
     text = re.sub(r"pause_split_seconds: .*", "pause_split_seconds: %s" % psplit, text)
     text = re.sub(r"preview_seconds: .*", "preview_seconds: %s" % preview, text)
@@ -139,7 +146,7 @@ def _watchdog(proc):
             return
 
 
-def start(key, step, maxseg, psplit, preview, trail, tick):
+def start(key, onset, maxseg, psplit, preview, trail, tick):
     with lock:
         if running():
             # Clicking 开始 is a clear intent to replace the current run:
@@ -148,8 +155,8 @@ def start(key, step, maxseg, psplit, preview, trail, tick):
         wav = inputs().get(key)
         if not wav or not os.path.isfile(wav):
             return False, "missing input %s" % wav
-        if step not in STEPS or maxseg not in MAXSEGS or psplit not in PSPLITS or preview not in PREVIEWS or trail not in TRAILS:
-            return False, "bad step/maxseg/psplit/preview/trail"
+        if onset not in ONSETS or maxseg not in MAXSEGS or psplit not in PSPLITS or preview not in PREVIEWS or trail not in TRAILS:
+            return False, "bad onset/maxseg/psplit/preview/trail"
         if tick not in TICKS:
             return False, "bad tick"
         # Rotate the previous workspace out of the request path: renaming is a
@@ -164,7 +171,7 @@ def start(key, step, maxseg, psplit, preview, trail, tick):
             except OSError:
                 subprocess.run(["rm", "-rf", WORK])
         os.makedirs(os.path.join(WORK, "mp3"), exist_ok=True)
-        cfg = make_config(wav, step, maxseg, psplit, preview, trail, tick)
+        cfg = make_config(wav, onset, maxseg, psplit, preview, trail, tick)
         log = open(LOG, "w")
         state["log"] = log
         state["proc"] = subprocess.Popen(
@@ -221,7 +228,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
         elif u.path == "/audio":
-            self.serve_file(inputs().get(q.get("input", ["60"])[0]), "audio/wav")
+            self.serve_file(inputs().get(q.get("input", ["vad"])[0]), "audio/wav")
         elif u.path == "/inputs":
             items = []
             for key, path in inputs().items():
@@ -231,11 +238,11 @@ class Handler(BaseHTTPRequestHandler):
                 items.append({"key": key, "label": label})
             self.send_json(items)
         elif u.path == "/ref":
-            key = q.get("input", ["60"])[0]
-            if key.startswith("up:"):
-                self.send_json([])  # no reference labels for custom audio
-            else:
+            key = q.get("input", ["vad"])[0]
+            if key in REF_KEYS:
                 self.send_json(load_ref(float(q.get("limit", ["1e9"])[0])))
+            else:
+                self.send_json([])  # reference labels exist for 2P opening only
         elif u.path == "/status":
             self.send_json({"running": running(), "input": state["input"]})
         elif u.path == "/events":
@@ -247,7 +254,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path == "/start":
-            ok, msg = start(q.get("input", ["60"])[0], q.get("step", ["1"])[0],
+            ok, msg = start(q.get("input", ["vad"])[0], q.get("onset", ["0.5"])[0],
                             q.get("maxseg", ["5"])[0], q.get("psplit", ["4"])[0],
                             q.get("preview", ["2"])[0], q.get("trail", ["0.5"])[0],
                             q.get("tick", ["0"])[0])

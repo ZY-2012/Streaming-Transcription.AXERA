@@ -2048,7 +2048,8 @@ class NemotronStreamDiarizer {
     writer_ = std::thread([this] { WriterLoop(); });
     reader_ = std::thread([this] { ReaderLoop(); });
     std::cerr << "[diar] nemotron streaming worker loaded; preset="
-              << config_.nemotron.preset << " model_dir="
+              << config_.nemotron.preset << " variant="
+              << config_.nemotron.variant << " model_dir="
               << config_.nemotron.model_dir << "\n";
   }
 
@@ -2163,9 +2164,13 @@ class NemotronStreamDiarizer {
       return false;
     }
     const std::string dir = AbsolutePath(nemo.model_dir);
+    // lowlat/offline selects the streaming profile; variant selects the
+    // Pulsar2 compile target (npu2 = BIG_LITTLE alongside the pipeline,
+    // npu3 = the original VNPU-DISABLE-only models for standalone runs).
     const std::string suffix = nemo.preset == "lowlat" ? "_lowlat" : "";
-    const std::string preencode = dir + "/preencode" + suffix + ".axmodel";
-    const std::string encoder = dir + "/encoder" + suffix + ".axmodel";
+    const std::string variant = nemo.variant == "npu3" ? "" : "_npu2";
+    const std::string preencode = dir + "/preencode" + suffix + variant + ".axmodel";
+    const std::string encoder = dir + "/encoder" + suffix + variant + ".axmodel";
     const std::string sil_emb = dir + "/learnable_sil_emb.npy";
     for (const std::string& path : {preencode, encoder, sil_emb}) {
       if (!fs::exists(path)) {
