@@ -2349,10 +2349,22 @@ class NemotronStreamDiarizer {
       frames_received_ = frame + 1;
     }
     committed_ = frames_received_ * kFrameSamples;
-    if (frames_received_ % 100 == 0) {  // ~1 s progress heartbeat
-      std::string body = "\"committed\":" + EventLog::Sec(committed_, kRateOut) +
-                         ",\"parts\":" + std::to_string(timeline_.size());
-      EventLog::Get().Write("diar", body);
+    // Live-demo event: same shape as the pyannote session "diar" events
+    // (core = [prev, committed] seconds, parts = newly closed speaker runs)
+    // so tools/live-demo renders the streaming timeline unchanged.
+    {
+      std::string body = "\"core\":[" + EventLog::Sec(event_prev_committed_, kRateOut) +
+                         "," + EventLog::Sec(committed_, kRateOut) + "],\"parts\":[";
+      for (std::size_t i = event_parts_sent_; i < timeline_.size(); ++i) {
+        if (i > event_parts_sent_) body += ",";
+        const Segment::Part& part = timeline_[i];
+        body += "[" + EventLog::Sec(part.begin, kRateOut) + "," +
+                EventLog::Sec(part.end, kRateOut) + "," +
+                EventLog::Quote(part.speaker_id) + "]";
+      }
+      event_parts_sent_ = timeline_.size();
+      event_prev_committed_ = committed_;
+      EventLog::Get().Write("diar", body + "]");
     }
     ready_.notify_all();
   }
@@ -2409,6 +2421,8 @@ class NemotronStreamDiarizer {
   std::vector<Segment::Part> timeline_;      // absolute 16 kHz sample parts
   std::size_t committed_ = 0;                // samples with final labels
   std::size_t frames_received_ = 0;          // absolute 10 ms frame frontier
+  std::size_t event_parts_sent_ = 0;          // live-demo event bookkeeping
+  std::size_t event_prev_committed_ = 0;
   std::vector<SpeakerRun> runs_{static_cast<std::size_t>(kSpeakers)};
   std::vector<std::size_t> last_part_{static_cast<std::size_t>(kSpeakers),
                                       kNoFrame};
