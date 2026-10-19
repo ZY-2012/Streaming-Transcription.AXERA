@@ -146,6 +146,20 @@ if [[ -d "${AX650_SDK_ROOT}/include" && -d "${AX650_SDK_ROOT}/lib" ]]; then
         -o "${BUILD_DIR}/nemotron_ax650"
     echo "Build done: ${BUILD_DIR}/nemotron_ax650"
 
+    # stream-asr-worker: resident streaming SenseVoice worker (true streaming
+    # model driver; protocol: docs/stream-asr-worker-protocol.md).
+    ASR_WORKER_DIR="${SDK_DIR}/driver/stream-asr-worker"
+    "${CXX}" "${CROSS_FLAGS[@]}" -std=c++17 -O2 \
+        -I"${ASR_WORKER_DIR}/src" \
+        -I"${ASR_WORKER_DIR}/third_party/kaldi-native-fbank/include" \
+        -I"${AX650_SDK_ROOT}/include" \
+        "${ASR_WORKER_DIR}/src/worker_main.cpp" \
+        "${ASR_WORKER_DIR}/third_party/kaldi-native-fbank/lib/aarch64/libkaldi-native-fbank-core.a" \
+        "${ASR_WORKER_DIR}/third_party/kaldi-native-fbank/lib/aarch64/libkissfft-float.a" \
+        -L"${AX650_SDK_ROOT}/lib" -lax_sys -lax_engine -lax_interpreter -pthread \
+        -o "${BUILD_DIR}/stream-asr-worker"
+    echo "Build done: ${BUILD_DIR}/stream-asr-worker"
+
     "${CXX}" "${CROSS_FLAGS[@]}" "${NEMO_CXXFLAGS[@]}" \
         "${NEMO_DIR}/src/stream_worker.cpp" \
         "${NEMO_DIR}/src/ax_engine_runner.cpp" \

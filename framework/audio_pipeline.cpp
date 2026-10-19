@@ -1737,7 +1737,7 @@ class StdioWorkerSession : public StreamingAsrSession {
     if (partial_.empty()) return PartialResult{};
     PartialResult out;
     out.text = partial_;
-    out.coverage = fed_;
+    out.coverage = partial_coverage_ != 0 ? partial_coverage_ : fed_;
     out.fresh = partial_fresh_;
     partial_fresh_ = false;   // the track reads each result once
     return out;
@@ -1753,6 +1753,7 @@ class StdioWorkerSession : public StreamingAsrSession {
       pending_.clear();
       fed_ = 0;
       partial_.clear();
+      partial_coverage_ = 0;
       partial_fresh_ = false;
     }
   }
@@ -1822,11 +1823,17 @@ class StdioWorkerSession : public StreamingAsrSession {
     char type = 0;
     std::string payload;
     while (ReadFrame(&type, &payload)) {
-      if (type == 'T' && payload.size() >= sizeof(uint32_t)) {
-        uint32_t flags = 0;
+      if (type == 'T' && payload.size() >= 2 * sizeof(uint32_t)) {
+        // 'T' layout: flags(4B) + coverage_samples(4B) + UTF-8 text.  The
+        // worker reports the exact fed-sample coverage of each hypothesis;
+        // the track uses it for the char<->time anchors (falling back to
+        // the fed count only when the field is zero).
+        uint32_t flags = 0, coverage = 0;
         std::memcpy(&flags, payload.data(), sizeof(flags));
-        const std::string text = payload.substr(sizeof(flags));
+        std::memcpy(&coverage, payload.data() + sizeof(flags), sizeof(coverage));
+        const std::string text = payload.substr(2 * sizeof(uint32_t));
         std::lock_guard<std::mutex> lock(mutex_);
+        partial_coverage_ = coverage;
         if (flags & 2u) { final_ = text; }
         else if (text != partial_) { partial_ = text; partial_fresh_ = true; }
       } else if (type == 'E') {
@@ -1846,6 +1853,7 @@ class StdioWorkerSession : public StreamingAsrSession {
   std::vector<int16_t> pending_;
   std::size_t fed_ = 0;            // samples fed into the current session
   std::string partial_, final_;
+  std::size_t partial_coverage_ = 0;   // worker-reported coverage of partial_
   bool partial_fresh_ = false;
 };
 

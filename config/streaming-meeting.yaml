@@ -102,7 +102,7 @@ asr:
   mode: streaming
   refine: off                # epoch: 轮次闭合时用离线模型再识别作权威稿
   streaming:
-    backend: http            # http = 板载 asr_server; worker = 常驻流式 worker(见 docs/stream-asr-worker-protocol.md)
+    backend: worker         # worker = 常驻真流式(协议见 docs/); http = 板载 asr_server
     runner: driver/asr/sensevoice/bin/asr_server
     worker: build/stream-asr-worker
     model_dir: models-for-asr-chain/asr
