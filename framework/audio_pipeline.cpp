@@ -1799,12 +1799,22 @@ std::vector<Segment::Part> ResolveSpeakerSegments(
                    [](const Segment::Part& a, const Segment::Part& c) { return a.begin < c.begin; });
   std::vector<Segment::Part> out;
   std::size_t cursor = b;
+  // Uncovered gaps inherit the nearest label (the same fill the offline
+  // path's MapTimelineToTrimmed applies), so short vocalizations that the
+  // diarization model never covered still get the temporally adjacent
+  // speaker instead of staying unlabeled and creating extra cut points.
   for (const auto& t : taken) {
-    if (t.begin > cursor) out.push_back({cursor, t.begin, ""});
+    if (t.begin > cursor) {
+      const std::string fill = out.empty() ? t.speaker_id : out.back().speaker_id;
+      out.push_back({cursor, t.begin, fill});
+    }
     out.push_back(t);
     cursor = std::max(cursor, t.end);
   }
-  if (cursor < e) out.push_back({cursor, e, ""});
+  if (cursor < e) {
+    const std::string fill = out.empty() ? std::string("") : out.back().speaker_id;
+    out.push_back({cursor, e, fill});
+  }
   for (std::size_t i = out.size() - 1; i > 0; --i) {
     if (out[i].speaker_id == out[i - 1].speaker_id) {
       out[i - 1].end = out[i].end;
@@ -1963,6 +1973,8 @@ class StreamingAsrTrack {
     emitted_text_.clear();
     emitted_tail_.clear();
     anchors_.clear();
+    seen_chars_ = 0;
+    prev_coverage_ = epoch_start_;
     next_poll_ = abs_ + poll_;
     epoch_start_ = abs_;
   }
@@ -1996,15 +2008,21 @@ class StreamingAsrTrack {
     }
     last_hyp_ = hyp;
     tail_ = hyp.substr(textutil::ContentMatchOffset(hyp, textutil::StripPunct(confirmed_)));
-    const std::size_t chars = textutil::StripPunct(confirmed_).size();
-    if (chars > 0) {
-      if (anchors_.empty()) {
-        anchors_.push_back({chars, abs_});
-      } else if (chars > anchors_.back().chars) {
-        if (anchors_.back().pos >= abs_) anchors_.back().chars = chars;
-        else anchors_.push_back({chars, abs_});
-      }
+    // Char<->time anchors record when content characters FIRST APPEAR in a
+    // hypothesis, positioned at the midpoint of the audio range covered
+    // since the previous one.  Anchoring at the confirmation time (as an
+    // earlier revision did) shifts every anchor 1-2 poll intervals late,
+    // which pushes turn boundaries before the first anchor to zero chars
+    // and silently disables the split.  First appearance gives an upper
+    // bound; the midpoint removes the systematic late bias.
+    const std::size_t seen = textutil::StripPunct(hyp).size();
+    if (seen > seen_chars_) {
+      const std::size_t pos = (prev_coverage_ + abs_) / 2;
+      if (anchors_.empty() || pos > anchors_.back().pos) anchors_.push_back({seen, pos});
+      else anchors_.back().chars = std::max(anchors_.back().chars, seen);
+      seen_chars_ = seen;
     }
+    prev_coverage_ = abs_;
     const bool changed = confirmed_ != emitted_text_ || tail_ != emitted_tail_;
     if (!changed) return;
     emitted_text_ = confirmed_;
@@ -2086,8 +2104,13 @@ class StreamingAsrTrack {
     const auto resolved = ResolveSpeakerSegments(parts, b, e);
     if (resolved.size() < 2) return {};
     std::vector<std::size_t> cuts;
-    for (std::size_t i = 1; i < resolved.size(); ++i)
-      cuts.push_back(textutil::CharsAt(anchors_, resolved[i].begin));
+    const auto offsets = textutil::ContentOffsets(text);
+    for (std::size_t i = 1; i < resolved.size(); ++i) {
+      const std::size_t idx = textutil::CharsAt(anchors_, resolved[i].begin);
+      // The char<->time map is coarse (one point per poll); snap the cut to
+      // the nearest punctuation boundary so pieces break between words.
+      cuts.push_back(textutil::SnapToPunct(text, offsets, idx, 5));
+    }
     const auto pieces = textutil::SplitAt(text, cuts);
     if (pieces.size() != resolved.size()) return {};
     std::vector<Piece> out;
@@ -2170,6 +2193,8 @@ class StreamingAsrTrack {
   std::string confirmed_, tail_, last_hyp_;
   std::string emitted_text_, emitted_tail_;
   std::vector<textutil::CharTimeAnchor> anchors_;
+  std::size_t seen_chars_ = 0;      // content chars already anchored
+  std::size_t prev_coverage_ = 0;   // audio position of the previous hypothesis
 };
 
 

@@ -64,6 +64,24 @@ void TestOffsetsAndSplit() {
         three[2] == "戊己", "three-way split");
 }
 
+void TestSnapToPunct() {
+  const std::string s = "好，谢谢。好，非常感谢";
+  const auto offsets = ContentOffsets(s);
+  // content: 好谢谢好非常感谢 = 8 chars (indices 0..7).  Punct gaps sit
+  // before index 3 (。after 谢谢) and index 4 (，after the second 好).  A
+  // raw cut at 7 (late by ~4 chars, the http poll cadence) snaps to the
+  // NEAREST punct, index 4 - "好，谢谢。好，|非常感谢"; the alternative at 3
+  // is one char further.  One boundary word can swap sides at this poll
+  // granularity; the worker backend's 100 ms partials tighten it.
+  check(SnapToPunct(s, offsets, 7, 5) == 4, "snap back to nearest punct");
+  // Forward preference on ties: a raw cut at 2 snaps forward to 3, keeping
+  // "好，谢谢" together instead of splitting after the leading 好，.
+  check(SnapToPunct(s, offsets, 2, 5) == 3, "snap forward preferred");
+  // No punctuation anywhere near -> unchanged.
+  const std::string t = "甲乙丙丁";
+  check(SnapToPunct(t, ContentOffsets(t), 2, 3) == 2, "no punct, no snap");
+}
+
 void TestCharsAt() {
   std::vector<CharTimeAnchor> anchors = {{0, 1600}, {4, 3200}, {8, 6400}};
   check(CharsAt(anchors, 800) == 0, "before first anchor");
@@ -82,6 +100,7 @@ void TestCharsAt() {
 int main() {
   TestAgreement();
   TestOffsetsAndSplit();
+  TestSnapToPunct();
   TestCharsAt();
   if (failures == 0) {
     std::printf("text agreement: OK\n");

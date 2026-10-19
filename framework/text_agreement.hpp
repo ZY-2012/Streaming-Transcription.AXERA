@@ -169,4 +169,30 @@ inline std::vector<std::string> SplitAt(const std::string& s,
   return out;
 }
 
+// Snap a content-char cut index to the nearest punctuation boundary within
+// +-window content chars ("好的，谢谢好非常" cut at 7 snaps to the 。after
+// 谢谢).  Cuts land between words instead of mid-word when the coarse
+// char<->time interpolation is off by a character or two.
+inline std::size_t SnapToPunct(const std::string& s, const std::vector<std::size_t>& offsets,
+                               std::size_t idx, std::size_t window) {
+  if (offsets.empty() || idx == 0 || idx >= offsets.size()) return idx;
+  auto gap_is_punct = [&](std::size_t j) {
+    if (j == 0) return false;
+    const std::size_t begin =
+        offsets[j - 1] + Utf8Len(static_cast<unsigned char>(s[offsets[j - 1]]));
+    const std::size_t end = offsets[j];
+    for (std::size_t p = begin; p < end; p += Utf8Len(static_cast<unsigned char>(s[p])))
+      if (IsPunct(s, p, Utf8Len(static_cast<unsigned char>(s[p]))) ) return true;
+    return false;
+  };
+  // Prefer the forward candidate on ties: boundary estimates tend to sit
+  // slightly late relative to the true speaker switch, so the next phrase
+  // end forward is the likelier cut.
+  for (std::size_t d = 0; d <= window; ++d) {
+    if (idx + d < offsets.size() && gap_is_punct(idx + d)) return idx + d;
+    if (idx >= d && idx - d > 0 && gap_is_punct(idx - d)) return idx - d;
+  }
+  return idx;
+}
+
 }  // namespace textutil

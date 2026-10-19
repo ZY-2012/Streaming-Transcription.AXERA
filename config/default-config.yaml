@@ -101,7 +101,7 @@ asr:
     epoch_cap_seconds: 12.0  # 单轮次音频上限，超过强制成段
     epoch_pause_seconds: 0.3  # 静音成段阈值：越小行越碎延迟越低，越大行越长
     label_wait_seconds: 3.0  # 轮次闭合等说话人时间线覆盖的最长时间
-    split_turns: false       # true: 轮内文本在说话人切换处切开逐段归属
+    split_turns: true        # 轮内文本在说话人切换处切开逐段归属
   model_path: models-for-asr-chain/asr
   model_type: sensevoice
   language: zh
