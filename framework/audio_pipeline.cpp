@@ -1773,6 +1773,16 @@ class StdioWorkerSession : public StreamingAsrSession {
     std::string out;
     final_.swap(out);
     final_ready_ = false;
+    // Second clear: the worker emits its LAST partial of the closing session
+    // right before the flush starts, so that partial can land in the slot
+    // AFTER the entry clear above.  The response pipe is FIFO - once the
+    // final (the session's last frame) has been consumed, every stale
+    // partial of the old session has already arrived.  Left behind, it
+    // became the next fragment epoch's caption verbatim: tiny epochs echoed
+    // the previous sentence as stray no-speaker rows.
+    partial_.clear();
+    partial_coverage_ = 0;
+    partial_fresh_ = false;
     return out;
   }
 
@@ -1999,6 +2009,14 @@ class StreamingAsrTrack {
   // warms its lazily-loaded model) before the audio threads start.
   bool Start() {
     if (!MakeSession()) return false;
+    // Prewarm the offline refine model: its first TranscribePcm lazily loads
+    // the network, a ~10 s stall that landed on the FIRST epoch's final
+    // (11.6 s lag in the 2P validation).  Pay it here, inside the startup
+    // model-loading phase, before the audio threads exist.
+    if (refine_ && asr_) {
+      auto lease = arbiter_->Acquire();
+      (void)asr_->TranscribePcm(std::vector<int16_t>(kRateOut / 10, 0));
+    }
     worker_ = std::thread([this] { WorkerLoop(); });
     loop_ = std::thread([this] { Loop(); });
     return true;
@@ -2229,7 +2247,10 @@ class StreamingAsrTrack {
     else if (session_) (void)session_->Discard();
     fr.covered = !fr.text.empty();
     fr.text = fr.covered ? fr.text : fr.last_hyp;
-    if (voiced_enough) finalize_.Push(std::move(fr));
+    if (voiced_enough) {
+      fr.window = epoch_;   // http fallback + offline refine need the audio
+      finalize_.Push(std::move(fr));
+    }
     ResetEpochState();
   }
 
