@@ -77,6 +77,9 @@ void TestSnapToPunct() {
   // Forward preference on ties: a raw cut at 2 snaps forward to 3, keeping
   // "好，谢谢" together instead of splitting after the leading 好，.
   check(SnapToPunct(s, offsets, 2, 5) == 3, "snap forward preferred");
+  // Strong punctuation wins over a comma sitting exactly on the estimate:
+  // the cut goes after "好，谢谢。" so speaker_1 keeps its opening word.
+  check(SnapToPunct(s, offsets, 4, 5) == 3, "strong punct beats adjacent comma");
   // No punctuation anywhere near -> unchanged.
   const std::string t = "甲乙丙丁";
   check(SnapToPunct(t, ContentOffsets(t), 2, 3) == 2, "no punct, no snap");

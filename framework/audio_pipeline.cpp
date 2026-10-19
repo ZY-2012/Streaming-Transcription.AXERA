@@ -1974,9 +1974,9 @@ class StreamingAsrTrack {
     emitted_tail_.clear();
     anchors_.clear();
     seen_chars_ = 0;
-    prev_coverage_ = epoch_start_;
     next_poll_ = abs_ + poll_;
     epoch_start_ = abs_;
+    prev_coverage_ = epoch_start_;   // after the update: THIS epoch's start
   }
 
   void PollPartial() {
@@ -2015,7 +2015,10 @@ class StreamingAsrTrack {
     // which pushes turn boundaries before the first anchor to zero chars
     // and silently disables the split.  First appearance gives an upper
     // bound; the midpoint removes the systematic late bias.
-    const std::size_t seen = textutil::StripPunct(hyp).size();
+    // Content-char count, NOT bytes: CJK characters are 3 bytes each, and a
+    // byte count inflates every anchor 3x, which pushed each interpolated
+    // cut three times too late (a whole phrase onto the wrong speaker).
+    const std::size_t seen = textutil::ContentOffsets(hyp).size();
     if (seen > seen_chars_) {
       const std::size_t pos = (prev_coverage_ + abs_) / 2;
       if (anchors_.empty() || pos > anchors_.back().pos) anchors_.push_back({seen, pos});
@@ -2103,16 +2106,33 @@ class StreamingAsrTrack {
     if (!speakers_) return {};
     const auto resolved = ResolveSpeakerSegments(parts, b, e);
     if (resolved.size() < 2) return {};
-    std::vector<std::size_t> cuts;
+    std::vector<std::size_t> cuts, raw;
     const auto offsets = textutil::ContentOffsets(text);
     for (std::size_t i = 1; i < resolved.size(); ++i) {
       const std::size_t idx = textutil::CharsAt(anchors_, resolved[i].begin);
+      raw.push_back(idx);
       // The char<->time map is coarse (one point per poll); snap the cut to
       // the nearest punctuation boundary so pieces break between words.
       cuts.push_back(textutil::SnapToPunct(text, offsets, idx, 5));
     }
+    // Split diagnostics: one line per epoch close; the pieces/segments
+    // mismatch fallback is silent otherwise and looks like a mislabel.
+    {
+      std::string a;
+      for (const auto& an : anchors_) a += " " + std::to_string(an.chars) + "@" + std::to_string(an.pos);
+      std::string r;
+      for (const auto& seg : resolved) r += " [" + std::to_string(seg.begin) + "," + std::to_string(seg.end) + "," + seg.speaker_id + "]";
+      std::string c;
+      for (std::size_t i = 0; i < raw.size(); ++i) c += " " + std::to_string(raw[i]) + "->" + std::to_string(cuts[i]);
+      std::cerr << "[asr-split] epoch=[" << b << "," << e << "] text_len(chars)=" << textutil::ContentOffsets(text).size()
+                << " segments:" << r << " anchors:" << a << " cuts(raw->snap):" << c << "\n";
+    }
     const auto pieces = textutil::SplitAt(text, cuts);
-    if (pieces.size() != resolved.size()) return {};
+    if (pieces.size() != resolved.size()) {
+      std::cerr << "[asr-split] fallback to dominant (pieces=" << pieces.size()
+                << " segments=" << resolved.size() << ")\n";
+      return {};
+    }
     std::vector<Piece> out;
     for (std::size_t i = 0; i < pieces.size(); ++i) {
       if (pieces[i].empty()) continue;

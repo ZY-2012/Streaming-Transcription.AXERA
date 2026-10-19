@@ -54,6 +54,28 @@ inline bool IsPunct(const std::string& s, size_t i, size_t len) {
          cp == 0x2026 || cp == 0x2014;      // … —
 }
 
+// Sentence-final punctuation; a speaker turn almost always ends at one of
+// these rather than at a mid-sentence comma.
+inline bool IsStrongPunct(const std::string& s, size_t i, size_t len) {
+  const auto c = static_cast<unsigned char>(s[i]);
+  if (len == 1) return c == '.' || c == '?' || c == '!' || c == ';';
+  uint32_t cp = 0;
+  if (len == 2) {
+    cp = ((c & 0x1Fu) << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3Fu);
+  } else if (len == 3) {
+    cp = ((c & 0x0Fu) << 12) |
+         ((static_cast<unsigned char>(s[i + 1]) & 0x3Fu) << 6) |
+         (static_cast<unsigned char>(s[i + 2]) & 0x3Fu);
+  } else {
+    return false;
+  }
+  return cp == 0x3002 ||   // 。
+         cp == 0xFF01 ||   // ！
+         cp == 0xFF1F ||   // ？
+         cp == 0xFF1B ||   // ；
+         cp == 0x2026;     // …
+}
+
 inline std::string StripPunct(const std::string& s) {
   std::string out;
   size_t i = 0;
@@ -185,12 +207,32 @@ inline std::size_t SnapToPunct(const std::string& s, const std::vector<std::size
       if (IsPunct(s, p, Utf8Len(static_cast<unsigned char>(s[p]))) ) return true;
     return false;
   };
-  // Prefer the forward candidate on ties: boundary estimates tend to sit
-  // slightly late relative to the true speaker switch, so the next phrase
-  // end forward is the likelier cut.
+  auto gap_class = [&](std::size_t j) {  // 0 none, 1 weak, 2 strong
+    if (j == 0) return 0;
+    const std::size_t begin =
+        offsets[j - 1] + Utf8Len(static_cast<unsigned char>(s[offsets[j - 1]]));
+    const std::size_t end = offsets[j];
+    int best = 0;
+    for (std::size_t p = begin; p < end; p += Utf8Len(static_cast<unsigned char>(s[p]))) {
+      const std::size_t l = Utf8Len(static_cast<unsigned char>(s[p]));
+      if (IsStrongPunct(s, p, l)) return 2;
+      if (IsPunct(s, p, l)) best = std::max(best, 1);
+    }
+    return best;
+  };
+  // Speaker turns end at sentence-final punctuation: prefer the nearest
+  // strong boundary (。？！) within a small radius even when a comma sits
+  // right on the estimate ("好，谢谢。好，|非常" cuts after 。not after the
+  // following 好，).
+  for (std::size_t d = 1; d <= 2 && d <= window; ++d) {
+    if (idx >= d && idx - d > 0 && gap_class(idx - d) == 2) return idx - d;
+    if (idx + d < offsets.size() && gap_class(idx + d) == 2) return idx + d;
+  }
+  if (gap_class(idx) == 2) return idx;
+  // Otherwise the nearest boundary of any punctuation class.
   for (std::size_t d = 0; d <= window; ++d) {
-    if (idx + d < offsets.size() && gap_is_punct(idx + d)) return idx + d;
-    if (idx >= d && idx - d > 0 && gap_is_punct(idx - d)) return idx - d;
+    if (idx + d < offsets.size() && gap_class(idx + d) != 0) return idx + d;
+    if (idx >= d && idx - d > 0 && gap_class(idx - d) != 0) return idx - d;
   }
   return idx;
 }
