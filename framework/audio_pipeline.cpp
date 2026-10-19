@@ -1403,8 +1403,9 @@ class StreamingAsrSession {
   // Latest hypothesis for everything fed so far; instant, never does I/O on
   // the caller's thread.
   virtual PartialResult RequestPartial() = 0;
-  // Reset the session for the next epoch (bounded; thread A).
-  virtual void Discard() = 0;
+  // Reset the session for the next epoch (bounded; thread A).  For
+  // flush-final backends this returns the epoch's authoritative text.
+  virtual std::string Discard() = 0;
   // True when Discard() flushes the epoch's final text (the worker
   // protocol's zero-length frame), so the epoch close does not need an
   // extra transcribe.
@@ -1557,10 +1558,11 @@ class HttpAsrSession : public StreamingAsrSession {
     return out;
   }
 
-  void Discard() override {
+  std::string Discard() override {
     std::lock_guard<std::mutex> lock(mutex_);
     buffer_.clear();
     partial_ = PartialResult{};
+    return {};
   }
 
   std::string Transcribe(const std::vector<int16_t>& window) override {
@@ -1745,24 +1747,42 @@ class StdioWorkerSession : public StreamingAsrSession {
 
   // The zero-length frame makes the worker flush the session tail; its final
   // 'T' is picked up by the reader thread and picked back via TakeFinal().
-  void Discard() override {
-    std::lock_guard<std::mutex> lock(mutex_);
-    FlushPcmLocked();
-    const uint32_t zero = 0;
-    if (WriteAll(in_fd_, &zero, sizeof(zero))) {
-      pending_.clear();
-      fed_ = 0;
-      partial_.clear();
-      partial_coverage_ = 0;
-      partial_fresh_ = false;
+  // The zero-length frame makes the worker flush the session tail.  The
+  // flush takes a few hundred ms (silence pad + sweep runs on the NPU), so
+  // WAIT for this epoch's final 'T' here (bounded): an async-slot design let
+  // the previous epoch's late final be consumed by the next epoch's
+  // TakeFinal, shifting every transcript line by one epoch.
+  std::string Discard() override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      FlushPcmLocked();
+      const uint32_t zero = 0;
+      if (WriteAll(in_fd_, &zero, sizeof(zero))) {
+        pending_.clear();
+        fed_ = 0;
+        partial_.clear();
+        partial_coverage_ = 0;
+        partial_fresh_ = false;
+      }
+      final_ready_ = false;
+      final_.clear();
     }
+    std::unique_lock<std::mutex> lock(mutex_);
+    final_cv_.wait_for(lock, std::chrono::seconds(4),
+                       [&] { return final_ready_ || dead_; });
+    std::string out;
+    final_.swap(out);
+    final_ready_ = false;
+    return out;
   }
 
   bool FlushGivesFinal() const override { return true; }
 
   std::string TakeFinal() override {
     std::lock_guard<std::mutex> lock(mutex_);
-    return final_;
+    std::string out;
+    final_.swap(out);
+    return out;
   }
 
   std::string Transcribe(const std::vector<int16_t>&) override { return ""; }
@@ -1834,13 +1854,29 @@ class StdioWorkerSession : public StreamingAsrSession {
         const std::string text = payload.substr(2 * sizeof(uint32_t));
         std::lock_guard<std::mutex> lock(mutex_);
         partial_coverage_ = coverage;
-        if (flags & 2u) { final_ = text; }
-        else if (text != partial_) { partial_ = text; partial_fresh_ = true; }
+        if (flags & 2u) {
+          final_ = text;
+          final_ready_ = true;
+          final_cv_.notify_all();
+        } else if (text != partial_) {
+          partial_ = text;
+          partial_fresh_ = true;
+        }
       } else if (type == 'E') {
         std::cerr << "[asr-stream] worker error: " << payload << "\n";
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          dead_ = true;
+        }
+        final_cv_.notify_all();
         return;
       }
     }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      dead_ = true;
+    }
+    final_cv_.notify_all();
   }
 
   apm_example::AppConfig::Asr::Streaming cfg_;
@@ -1855,6 +1891,9 @@ class StdioWorkerSession : public StreamingAsrSession {
   std::string partial_, final_;
   std::size_t partial_coverage_ = 0;   // worker-reported coverage of partial_
   bool partial_fresh_ = false;
+  std::condition_variable final_cv_;   // flushed-final handshake (Discard wait)
+  bool final_ready_ = false;
+  bool dead_ = false;
 };
 
 // Speaker helpers over an absolute parts timeline.
@@ -2175,20 +2214,20 @@ class StreamingAsrTrack {
     fr.enqueued = std::chrono::steady_clock::now();
     fr.b = epoch_start_;
     fr.e = voiced_end_;
-    // The worker backend flushes its session tail at Discard; the final text
-    // arrives via TakeFinal.  The http backend must always transcribe the
-    // whole window: a partial whose snapshot covers voiced_end still lacks
-    // the ~0.3 s pause tail the model's rolling window needs to emit the
-    // final characters (measured: covered-skip finals dropped the last
-    // words of a sentence), and the snapshot can never include that tail
-    // before the close.
+    // The worker backend flushes its session tail at Discard and the
+    // (synchronous) Discard hands back this epoch's authoritative final;
+    // when the wait times out the request still carries last_hyp as the
+    // fallback.  The http backend must always transcribe the whole window:
+    // a partial whose snapshot covers voiced_end still lacks the ~0.3 s
+    // pause tail the model's rolling window needs to emit the final
+    // characters (measured: covered-skip finals dropped the last words).
     const bool flush_final = session_ && session_->FlushGivesFinal();
-    fr.covered = flush_final;
-    fr.text = fr.covered ? last_hyp_ : std::string();
     fr.last_hyp = last_hyp_;
     fr.anchors = anchors_;
-    if (voiced_enough) fr.window = epoch_;
-    if (session_) session_->Discard();
+    if (flush_final) fr.text = session_->Discard();
+    else if (session_) (void)session_->Discard();
+    fr.covered = !fr.text.empty();
+    fr.text = fr.covered ? fr.text : fr.last_hyp;
     if (voiced_enough) finalize_.Push(std::move(fr));
     ResetEpochState();
   }
@@ -2243,8 +2282,8 @@ class StreamingAsrTrack {
 
   void DoFinalize(FinalizeRequest& fr) {
     const auto t0 = std::chrono::steady_clock::now();
-    std::string text = fr.text;
-    if (text.empty() && session_ && !fr.window.empty())
+    std::string text = fr.text;   // flushed final (worker) or last_hyp
+    if (!fr.covered && text.empty() && session_ && !fr.window.empty())
       text = session_->Transcribe(fr.window);
     const auto t1 = std::chrono::steady_clock::now();
     if (text.empty() && session_) text = session_->TakeFinal();
