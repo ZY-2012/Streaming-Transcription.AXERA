@@ -200,6 +200,7 @@ function streamLine(b){
 function settleStream(){
   if (!S.st) return;
   const row = S.st;
+  finishTyping(row);
   row.tail.textContent = '';
   if (row.e === null) row.e = now();
   S.st = null;
@@ -288,22 +289,52 @@ function insertFinalRow(f){
   renderAuthRow(ln);
   feedStick();
 }
+function finishTyping(ln){
+  if (ln._typer) { clearTimeout(ln._typer); ln._typer = null; }
+  if (ln._target !== undefined) ln.solid.textContent = ln._target;
+}
+// Reveal the confirmed caption char by char as partials grow it; a rewrite
+// (prefix mismatch) snaps instantly so revisions never look like typing.
+function typeCaption(ln, text){
+  ln._target = text;
+  if (ln._typer) return;
+  const step = () => {
+    ln._typer = null;
+    if (!ln.div.isConnected) return;
+    const cur = ln.solid.textContent;
+    if (!ln._target.startsWith(cur)) { ln.solid.textContent = ln._target; return; }
+    if (cur.length < ln._target.length) {
+      ln.solid.textContent = ln._target.slice(0, cur.length + 1);
+      ln._typer = setTimeout(step, 14);
+    }
+  };
+  step();
+}
 function onStext(ev){
   if (!S.st || S.st.key !== ev.b) { settleStream(); S.st = streamLine(ev.b); }
   if (S.firstStext === null) S.firstStext = ev.t;
   S.st.e = ev.e;               // latest tick end: the [b–e] range widens live
-  S.st.solid.textContent = ev.text;
+  typeCaption(S.st, ev.text);
   S.st.tail.textContent = ev.tail;
   paintLiveStamp(S.st);
   feedStick();
 }
 function onSfinal(ev){
-  if (!S.st || S.st.key !== ev.b) { settleStream(); S.st = streamLine(ev.b); }
+  // The finalize path lags the audio thread by ~1 s, so by the time an
+  // epoch's sfinal arrives the live caption may already show the NEXT
+  // epoch.  Never touch the live line in that case (the old code settled
+  // it and spawned an extra row -> duplicated/garbled feed): update the
+  // already-settled row for this epoch instead.
+  let row = (S.st && S.st.key === ev.b) ? S.st : null;
+  if (!row) row = S.rows.find(r => r.key === ev.b && !r.pv);
+  if (!row) row = streamLine(ev.b);
   if (S.firstStext === null) S.firstStext = ev.t;
-  S.st.e = ev.e;
-  S.st.solid.textContent = ev.text;
-  S.st.tail.textContent = '';
-  settleStream();
+  row.e = ev.e;
+  finishTyping(row);
+  row.solid.textContent = ev.text;
+  row._target = ev.text;   // a later finishTyping must not restore stale text
+  row.tail.textContent = '';
+  if (row === S.st) settleStream();
   for (const r of S.rows.slice(-8)) paintLiveStamp(r);  // recent live rows only
   S.prev.push({ b: ev.b, e: ev.e });   // epoch bar on the timeline text row
   feedStick();
@@ -433,8 +464,18 @@ $('startBtn').onclick = async () => {
     au.src = auURL; au.load();
     au.dataset.ready = '1';   // only THIS page's freshly loaded audio may
                               // auto-play on the pipeline's start event
-    // play()+pause() inside the click keeps autoplay permission for the delayed start
-    au.muted = true; au.play().then(() => au.pause()).catch(() => {});
+    if (S.t0 !== null) {
+      // The pipeline started while the (large) audio was still fetching.
+      // Play for real - the muted unlock play's pause() would otherwise
+      // race this call and silence the run (2P vs vad_example difference).
+      au.muted = $('mute').checked;
+      au.play().catch(() => {});
+      S.pendingPlay = false;
+    } else {
+      // play()+pause() inside the click keeps autoplay permission for the
+      // delayed start
+      au.muted = true; au.play().then(() => { if (S.t0 === null) au.pause(); }).catch(() => {});
+    }
   }
   loadWave(input, buf);
   $('status').textContent = j.msg;
