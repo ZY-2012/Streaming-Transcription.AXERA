@@ -109,7 +109,8 @@ asr:
     server: http://127.0.0.1:18080
     model_name: sensevoice
     language: zh
-    poll_seconds: 0.8        # 增量文本节拍（http: 增长窗口 POST; worker: partial 轮询）
+    poll_seconds: 0.5        # 增量文本节拍（http: 增长窗口 POST; worker: partial 轮询）
+    confirm: immediate        # immediate=即出即显（最快）；agreement=LA-2 稳定后再显
     epoch_cap_seconds: 12.0  # 单轮次音频上限，超过强制成段
     epoch_pause_seconds: 0.3  # 静音成段阈值：越小行越碎延迟越低，越大行越长
     label_wait_seconds: 3.0  # 轮次闭合等说话人时间线覆盖的最长时间

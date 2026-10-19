@@ -283,7 +283,13 @@ struct AppConfig {
       std::string language;
       // Cadence of partial-text requests (http backend: growing-window POST;
       // worker backend: partial poll interval).
-      float poll_seconds = 0.8f;
+      float poll_seconds = 0.5f;
+      // Partial-text display commit policy.  "immediate": show each new
+      // hypothesis as-is (fastest - the page rewrites whole lines and the
+      // epoch close is authoritative); "agreement": LocalAgreement-2
+      // (confirm only what two consecutive hypotheses agree on - calmer,
+      // one poll slower, meant for coarse/jittery backends).
+      std::string confirm = "immediate";
       // Session reset cap: an epoch longer than this is force-closed so the
       // streaming session state stays bounded.
       float epoch_cap_seconds = 12.0f;

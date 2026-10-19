@@ -328,6 +328,8 @@ bool ValidateAppConfig(const AppConfig& c, std::string* error) {
     if ((c.asr.streaming.backend != "http" &&
          c.asr.streaming.backend != "worker" &&
          c.asr.streaming.backend != "lib") ||
+        (c.asr.streaming.confirm != "immediate" &&
+         c.asr.streaming.confirm != "agreement") ||
         c.asr.streaming.poll_seconds < 0.05f ||
         c.asr.streaming.poll_seconds > 5.0f ||
         c.asr.streaming.epoch_cap_seconds < 2.0f ||
@@ -492,7 +494,7 @@ bool LoadAppConfig(const std::string& path,
       "asr.streaming.backend", "asr.streaming.runner",
       "asr.streaming.worker", "asr.streaming.model_dir",
       "asr.streaming.server", "asr.streaming.model_name",
-      "asr.streaming.language", "asr.streaming.poll_seconds",
+      "asr.streaming.language", "asr.streaming.poll_seconds", "asr.streaming.confirm",
       "asr.streaming.epoch_cap_seconds", "asr.streaming.epoch_pause_seconds",
       "asr.streaming.label_wait_seconds",
       "asr.streaming.split_turns",
@@ -615,6 +617,7 @@ bool LoadAppConfig(const std::string& path,
   GET_STRING("asr.streaming.model_name", c->asr.streaming.model_name);
   GET_STRING("asr.streaming.language", c->asr.streaming.language);
   GET_NUM("asr.streaming.poll_seconds", c->asr.streaming.poll_seconds);
+  GET_STRING("asr.streaming.confirm", c->asr.streaming.confirm);
   GET_NUM("asr.streaming.epoch_cap_seconds", c->asr.streaming.epoch_cap_seconds);
   GET_NUM("asr.streaming.epoch_pause_seconds", c->asr.streaming.epoch_pause_seconds);
   GET_NUM("asr.streaming.label_wait_seconds", c->asr.streaming.label_wait_seconds);

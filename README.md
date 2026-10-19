@@ -199,6 +199,10 @@ response : 帧 = type + uint32 len + payload（默认 fd 3）
 - 16 kHz 音频逐 hop 喂给流式 SenseVoice 会话（26 帧滚动窗，NPU2 版
   `streaming_sensevoice.axmodel`），识别不再看任何被硬切的窗口——
   切分处的糊字/丢字问题从根上消除；
+- **三线程结构保证文字实时跟上音频**：音频线程零 I/O（只喂会话/切
+  epoch），轮询线程异步 POST 增长窗口取增量文本，收尾线程做最终识别
+  + 说话人归属。板端实测字幕滞后 **~0.24 s**（全程平稳无累积），
+  权威行滞后中位 **~1.2 s**（其中 ~0.5 s 是说话人时间线的固有滞后）；
 - 停顿 ≥ `asr.streaming.epoch_pause_seconds`（默认 0.3 s，词安全）成段为
   一行；每 ~0.8 s 取增量文本，标点宽松 LocalAgreement-2 确认稳定前缀
   （`stext` 事件，带临时说话人）；
