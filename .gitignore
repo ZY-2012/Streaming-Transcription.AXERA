@@ -22,3 +22,6 @@ toolchains/
 
 # nemotron host-side parity-test artifacts
 driver/nemotron/build_host/
+
+# Host-test build artifacts
+build_host/test_text_agreement
