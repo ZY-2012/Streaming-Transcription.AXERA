@@ -99,6 +99,7 @@ function reset(){
   au.removeAttribute('src');   // a stale blob must never replay for the next run
   au.load();
   au.pause();
+  au.dataset.ready = '';      // and no 'start' replay may auto-play it either
   const el = $('feed');
   if (el._typing) { clearTimeout(el._typing.timer); el._typing = null; }
   el._lastArrive = null; el._estGap = null;
@@ -314,7 +315,12 @@ function onEvent(ev){
     if (!ev.running && S.t0 !== null && S.frozen === null) { au.pause(); S.frozen = now(); }
     return; }
   if (ev.ev === 'start') { S.t0 = performance.now(); au.currentTime = 0; au.muted = $('mute').checked;
-    if (au.src) au.play().catch(()=>{}); else S.pendingPlay = true;   // audio still buffering
+    // Only play audio this page loaded for THIS run.  SSE reconnects replay
+    // the whole event stream; without the guard a stale tab (server restart,
+    // another client switching runs) would start playing its own leftover
+    // source on top of the run - two sounds at once in the room.
+    if (au.src && au.dataset.ready === '1') au.play().catch(()=>{});
+    else S.pendingPlay = true;   // audio still buffering / this page is a viewer
     return; }
   if (S.t0 === null) return;
   // SSE is polled every 0.1 s: never let the page clock lag the board clock.
@@ -425,6 +431,8 @@ $('startBtn').onclick = async () => {
   if (buf) {
     auURL = URL.createObjectURL(new Blob([buf], {type: 'audio/wav'}));
     au.src = auURL; au.load();
+    au.dataset.ready = '1';   // only THIS page's freshly loaded audio may
+                              // auto-play on the pipeline's start event
     // play()+pause() inside the click keeps autoplay permission for the delayed start
     au.muted = true; au.play().then(() => au.pause()).catch(() => {});
   }
