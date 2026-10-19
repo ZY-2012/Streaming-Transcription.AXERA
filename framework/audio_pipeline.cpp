@@ -1976,6 +1976,12 @@ std::vector<Segment::Part> ResolveSpeakerSegments(
   return out;
 }
 
+// Streaming pre-roll: how much pre-onset audio the epoch replays at open.
+// Soft word onsets sit well before the VAD flag; ~0.5 s covers the observed
+// clip range (the 2P reference labels show lost words up to ~0.4 s before the
+// first voiced hop).
+constexpr std::size_t kPreRoll = kRateOut / 2;
+
 // Guard for the streaming sidecar (written from the audio and worker threads).
 std::mutex g_streaming_sidecar_mutex;
 
@@ -2085,9 +2091,22 @@ class StreamingAsrTrack {
   }
 
   void Feed(const Item& item) {
+    if (!item.voiced) {
+      // Pre-onset ring: EVERYTHING since the last voiced hop - including the
+      // closing pause the previous epoch consumed as silence.  Weak word
+      // onsets (a breathy "嗯" at 2P 19.977, soft syllables at turn
+      // boundaries) sit inside that stretch, before the VAD flag; replaying
+      // only post-close audio still clipped them (checked against the 2P
+      // reference labels - the 漏字 was concentrated at line heads).
+      pre_roll_.insert(pre_roll_.end(), item.samples.begin(), item.samples.end());
+      if (pre_roll_.size() > kPreRoll) pre_roll_.erase(
+          pre_roll_.begin(), pre_roll_.end() - static_cast<std::ptrdiff_t>(kPreRoll));
+      if (!in_epoch_) return;
+    }
     if (!in_epoch_) {
-      if (!item.voiced) return;
-      OpenEpoch();
+      OpenEpoch();   // replays the ring (pre-onset audio) and clears it
+    } else if (item.voiced) {
+      pre_roll_.clear();   // voiced audio ends any pre-onset stretch
     }
     epoch_.insert(epoch_.end(), item.samples.begin(), item.samples.end());
     if (session_) session_->Feed(item.samples);
@@ -2105,7 +2124,10 @@ class StreamingAsrTrack {
 
   void OpenEpoch() {
     in_epoch_ = true;
-    epoch_.clear();
+    epoch_.assign(pre_roll_.begin(), pre_roll_.end());
+    if (session_ && !pre_roll_.empty()) session_->Feed(pre_roll_);
+    epoch_start_ = abs_ - pre_roll_.size();
+    pre_roll_.clear();
     voiced_ = 0;
     silence_ = 0;
     voiced_end_ = abs_;
@@ -2117,7 +2139,6 @@ class StreamingAsrTrack {
     anchors_.clear();
     seen_chars_ = 0;
     last_poll_coverage_ = 0;
-    epoch_start_ = abs_;
     prev_coverage_ = epoch_start_;
   }
 
@@ -2480,6 +2501,7 @@ class StreamingAsrTrack {
   const std::size_t pause_close_, epoch_cap_;
   const int label_wait_ms_;
   const std::size_t min_voiced_ = kRateOut / 2;   // 0.5 s of voiced audio
+  std::vector<int16_t> pre_roll_;  // recent pre-onset audio, replayed at open
   apm_example::AppConfig::Asr cfg_;
   SenseVoiceRunner* asr_ = nullptr;
   Npu2CellArbiter* arbiter_ = nullptr;
