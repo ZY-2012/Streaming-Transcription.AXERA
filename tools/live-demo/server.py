@@ -75,6 +75,8 @@ def make_config(wav, onset, maxseg, psplit, preview, trail, tick):
     # the plain-threshold behaviour; the config validator wants 0 < off <= on).
     text = re.sub(r"onset: .*", "onset: %s" % onset, text)
     text = re.sub(r"offset: .*", "offset: %s" % onset, text)
+    # The realtime-text cadence control drives the streaming ASR poll rate.
+    text = re.sub(r"poll_seconds: .*", "poll_seconds: %s" % tick, text)
     text = re.sub(r"max_segment_seconds: .*", "max_segment_seconds: %s" % maxseg, text)
     text = re.sub(r"pause_split_seconds: .*", "pause_split_seconds: %s" % psplit, text)
     text = re.sub(r"preview_seconds: .*", "preview_seconds: %s" % preview, text)

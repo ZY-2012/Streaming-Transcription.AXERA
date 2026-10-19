@@ -244,6 +244,63 @@ struct AppConfig {
     std::string library;
     int npu_core = 1;
     int worker_threads = 1;
+    // "offline": current behaviour - the VAD segments/parts are transcribed
+    // with the offline SenseVoice model when they close.
+    // "streaming": a continuous StreamingAsrTrack feeds audio to a streaming
+    // SenseVoice session (26-frame rolling window), confirms text with
+    // LocalAgreement-2 as partials arrive, and attributes speakers from the
+    // diarization timeline; the per-segment offline ASR path is skipped.
+    std::string mode = "offline";
+    // "off": streaming text is authoritative as produced.
+    // "epoch": re-run the offline model once per closed epoch and use that
+    // as the authoritative line (streaming partials stay for display).
+    std::string refine = "off";
+    struct Streaming {
+      // Backend for the streaming session.
+      //   "http":  the prebuilt OpenAI-compatible asr_server binary (bundled
+      //            under driver/asr/sensevoice/bin/); each partial request
+      //            POSTs the growing epoch window, the server feeds it
+      //            through the streaming model.
+      //   "worker": the resident stream-asr-worker (framed PCM on stdin,
+      //            incremental text events on fd 3; protocol in
+      //            docs/stream-asr-worker-protocol.md).  True continuous
+      //            partials, no re-transcription.
+      //   "lib":   an updated libax_asr_api.so exposing AX_ASR_Stream*.
+      std::string backend = "http";
+      // asr_server binary (http backend); spawned by the pipeline when
+      // `server` is not reachable.
+      std::string runner = "driver/asr/sensevoice/bin/asr_server";
+      // stream-asr-worker binary (worker backend).
+      std::string worker = "build/stream-asr-worker";
+      // Model directory for the streaming backend; the runtime reads
+      // <model_dir>/sensevoice/{streaming_}sensevoice.axmodel + tokenizer
+      // assets.  Empty reuses asr.model_path.
+      std::string model_dir;
+      // http backend endpoint and model name for /v1/audio/transcriptions.
+      std::string server = "http://127.0.0.1:18080";
+      std::string model_name = "sensevoice";
+      // Language for the streaming backend; empty reuses asr.language.
+      std::string language;
+      // Cadence of partial-text requests (http backend: growing-window POST;
+      // worker backend: partial poll interval).
+      float poll_seconds = 0.8f;
+      // Session reset cap: an epoch longer than this is force-closed so the
+      // streaming session state stays bounded.
+      float epoch_cap_seconds = 12.0f;
+      // Silence that closes an epoch (one transcript line).  0.2-0.3 s gives
+      // per-phrase lines with the lowest latency; larger values merge
+      // hesitations into longer lines.  Cuts are word-safe either way.
+      float epoch_pause_seconds = 0.3f;
+      // How long an epoch close may wait for the diarization timeline to
+      // cover its voiced audio before the line is emitted with the best
+      // speaker information available.
+      float label_wait_seconds = 3.0f;
+      // Split one epoch's text at diarization turn boundaries (the
+      // char<->time map is coarse; off = whole epoch carries its dominant
+      // speaker).
+      bool split_turns = false;
+    };
+    Streaming streaming;
   } asr;
 
   struct Output {

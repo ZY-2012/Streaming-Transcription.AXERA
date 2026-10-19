@@ -319,6 +319,31 @@ bool ValidateAppConfig(const AppConfig& c, std::string* error) {
     *error = "output storage and ASR worker values are invalid";
     return false;
   }
+  if ((c.asr.mode != "offline" && c.asr.mode != "streaming") ||
+      (c.asr.refine != "off" && c.asr.refine != "epoch")) {
+    *error = "asr.mode must be offline or streaming; asr.refine must be off or epoch";
+    return false;
+  }
+  if (c.asr.mode == "streaming") {
+    if ((c.asr.streaming.backend != "http" &&
+         c.asr.streaming.backend != "worker" &&
+         c.asr.streaming.backend != "lib") ||
+        c.asr.streaming.poll_seconds < 0.05f ||
+        c.asr.streaming.poll_seconds > 5.0f ||
+        c.asr.streaming.epoch_cap_seconds < 2.0f ||
+        c.asr.streaming.epoch_cap_seconds > 60.0f ||
+        c.asr.streaming.epoch_pause_seconds < 0.1f ||
+        c.asr.streaming.epoch_pause_seconds > 2.0f ||
+        c.asr.streaming.label_wait_seconds < 0.0f ||
+        c.asr.streaming.label_wait_seconds > 30.0f ||
+        c.asr.streaming.runner.empty() ||
+        c.asr.streaming.worker.empty() ||
+        c.asr.streaming.server.empty() ||
+        c.asr.streaming.model_name.empty()) {
+      *error = "asr.streaming values are invalid";
+      return false;
+    }
+  }
   if (c.runtime.npu_lock_file.empty()) {
     *error = "runtime.npu_lock_file must not be empty";
     return false;
@@ -463,6 +488,14 @@ bool LoadAppConfig(const std::string& path,
       "diarization.incremental_rho_update",
       "asr.enabled", "asr.model_path", "asr.model_type", "asr.language",
       "asr.library", "asr.npu_core", "asr.worker_threads",
+      "asr.mode", "asr.refine",
+      "asr.streaming.backend", "asr.streaming.runner",
+      "asr.streaming.worker", "asr.streaming.model_dir",
+      "asr.streaming.server", "asr.streaming.model_name",
+      "asr.streaming.language", "asr.streaming.poll_seconds",
+      "asr.streaming.epoch_cap_seconds", "asr.streaming.epoch_pause_seconds",
+      "asr.streaming.label_wait_seconds",
+      "asr.streaming.split_turns",
       "output.temp_dir", "output.text_file", "output.mp3_dir",
       "output.max_mp3_storage_mb", "output.mp3_encoder",
       "runtime.input", "runtime.input_wav", "runtime.file_input_mode",
@@ -572,6 +605,20 @@ bool LoadAppConfig(const std::string& path,
   GET_NUM("diarization.incremental_delta_min", c->diarization.incremental_delta_min);
   GET_NUM("diarization.incremental_rho_update", c->diarization.incremental_rho_update);
   GET_BOOL("asr.enabled", c->asr.enabled);
+  GET_STRING("asr.mode", c->asr.mode);
+  GET_STRING("asr.refine", c->asr.refine);
+  GET_STRING("asr.streaming.backend", c->asr.streaming.backend);
+  GET_STRING("asr.streaming.runner", c->asr.streaming.runner);
+  GET_STRING("asr.streaming.worker", c->asr.streaming.worker);
+  GET_STRING("asr.streaming.model_dir", c->asr.streaming.model_dir);
+  GET_STRING("asr.streaming.server", c->asr.streaming.server);
+  GET_STRING("asr.streaming.model_name", c->asr.streaming.model_name);
+  GET_STRING("asr.streaming.language", c->asr.streaming.language);
+  GET_NUM("asr.streaming.poll_seconds", c->asr.streaming.poll_seconds);
+  GET_NUM("asr.streaming.epoch_cap_seconds", c->asr.streaming.epoch_cap_seconds);
+  GET_NUM("asr.streaming.epoch_pause_seconds", c->asr.streaming.epoch_pause_seconds);
+  GET_NUM("asr.streaming.label_wait_seconds", c->asr.streaming.label_wait_seconds);
+  GET_BOOL("asr.streaming.split_turns", c->asr.streaming.split_turns);
   GET_STRING("asr.model_path", c->asr.model_path);
   GET_STRING("asr.model_type", c->asr.model_type);
   GET_STRING("asr.language", c->asr.language);

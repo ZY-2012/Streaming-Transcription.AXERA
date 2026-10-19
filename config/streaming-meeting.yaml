@@ -96,6 +96,24 @@ diarization:
   session_max_wait_sec: 30
 asr:
   enabled: true
+  # True-streaming text track: continuous streaming SenseVoice session,
+  # LocalAgreement-2 confirmed text, speakers from the diarization timeline.
+  # offline = the legacy per-segment path (unchanged behaviour).
+  mode: streaming
+  refine: off                # epoch: 轮次闭合时用离线模型再识别作权威稿
+  streaming:
+    backend: http            # http = 板载 asr_server; worker = 常驻流式 worker(见 docs/stream-asr-worker-protocol.md)
+    runner: driver/asr/sensevoice/bin/asr_server
+    worker: build/stream-asr-worker
+    model_dir: models-for-asr-chain/asr
+    server: http://127.0.0.1:18080
+    model_name: sensevoice
+    language: zh
+    poll_seconds: 0.8        # 增量文本节拍（http: 增长窗口 POST; worker: partial 轮询）
+    epoch_cap_seconds: 12.0  # 单轮次音频上限，超过强制成段
+    epoch_pause_seconds: 0.3  # 静音成段阈值：越小行越碎延迟越低，越大行越长
+    label_wait_seconds: 3.0  # 轮次闭合等说话人时间线覆盖的最长时间
+    split_turns: false       # true: 轮内文本在说话人切换处切开逐段归属
   model_path: models-for-asr-chain/asr
   model_type: sensevoice
   language: zh

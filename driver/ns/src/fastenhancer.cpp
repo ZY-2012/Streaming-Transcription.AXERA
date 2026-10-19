@@ -167,7 +167,10 @@ bool FastEnhancer::load(const std::string& model_path) {
         shutdown();
         return false;
     }
-    // FastEnhance is an NPU1 model and runs on the LITTLE one-core partition.
+    // FastEnhance is an NPU1 model and runs on the LITTLE one-core partition
+    // under BIG_LITTLE; under DISABLE (unified NPU, shared with the streaming
+    // ASR server and the diarization worker) the affinity below is only a
+    // scheduling hint.
     AX_ENGINE_NPU_ATTR_T active_attributes{};
     status = AX_ENGINE_GetVNPUAttr(&active_attributes);
     if (status != 0) {
@@ -175,8 +178,10 @@ bool FastEnhancer::load(const std::string& model_path) {
         shutdown();
         return false;
     }
-    if (active_attributes.eHardMode != AX_ENGINE_VIRTUAL_NPU_BIG_LITTLE) {
-        fail("FastEnhance requires AX_ENGINE_VIRTUAL_NPU_BIG_LITTLE");
+    if (active_attributes.eHardMode != AX_ENGINE_VIRTUAL_NPU_BIG_LITTLE &&
+        active_attributes.eHardMode != AX_ENGINE_VIRTUAL_NPU_DISABLE) {
+        fail("FastEnhance requires BIG_LITTLE or DISABLE VNPU mode, got " +
+             std::to_string(static_cast<int>(active_attributes.eHardMode)));
         shutdown();
         return false;
     }
@@ -184,8 +189,13 @@ bool FastEnhancer::load(const std::string& model_path) {
         static_cast<AX_ENGINE_NPU_SET_T>(0x2U);
     if (AX_ENGINE_SetAffinity(handle_, single_vnpu) != 0) {
         AX_ENGINE_NPU_SET_T actual = 0;
-        if (AX_ENGINE_GetAffinity(handle_, &actual) != 0 ||
-            actual != single_vnpu) {
+        const bool bound = AX_ENGINE_GetAffinity(handle_, &actual) == 0 &&
+                           actual == single_vnpu;
+        // Under DISABLE (unified NPU) the LITTLE partition does not exist,
+        // so the bind can fail; the affinity is only a scheduling hint
+        // there.  Under BIG_LITTLE it is a hard requirement.
+        if (!bound &&
+            active_attributes.eHardMode != AX_ENGINE_VIRTUAL_NPU_DISABLE) {
             fail("AX_ENGINE_SetAffinity(VNPU1 single-core) failed");
             shutdown();
             return false;
