@@ -1639,7 +1639,6 @@ class HttpAsrSession : public StreamingAsrSession {
   // ~30 s in, no anchors, final transcribe every epoch).
   std::string Post(const std::vector<int16_t>& pcm, const char* tag) {
     if (pcm.empty()) return "";
-    std::lock_guard<std::mutex> post_lock(post_mutex_);
     const fs::path wav = fs::path(work_dir_) / ("asr-req-" + std::string(tag) + ".wav");
     if (!WriteWav(wav, pcm, kRateOut)) {
       std::cerr << "[asr-stream] request WAV failed\\n";
@@ -1677,10 +1676,6 @@ class HttpAsrSession : public StreamingAsrSession {
   pid_t pid_ = -1;
   std::thread poller_;
   mutable std::mutex mutex_;       // buffer_/partial_ state
-  std::mutex post_mutex_;          // serializes POSTs: the server runs one
-                                    // model, concurrent uploads queue there and
-                                    // double every round trip (measured 0.6-1.0
-                                    // s vs ~0.4 s solo)
   std::vector<int16_t> buffer_;   // epoch audio (cleared by Discard)
   PartialResult partial_;         // latest hypothesis from the poller
   bool busy_ = false, stop_ = false;
@@ -2173,10 +2168,14 @@ class StreamingAsrTrack {
     fr.b = epoch_start_;
     fr.e = voiced_end_;
     // The worker backend flushes its session tail at Discard; the final text
-    // arrives via TakeFinal.  Otherwise reuse the last hypothesis when it
-    // already covered the voiced audio (saves the final POST).
+    // arrives via TakeFinal.  The http backend must always transcribe the
+    // whole window: a partial whose snapshot covers voiced_end still lacks
+    // the ~0.3 s pause tail the model's rolling window needs to emit the
+    // final characters (measured: covered-skip finals dropped the last
+    // words of a sentence), and the snapshot can never include that tail
+    // before the close.
     const bool flush_final = session_ && session_->FlushGivesFinal();
-    fr.covered = !flush_final && !last_hyp_.empty() && voiced_end_ <= last_poll_coverage_;
+    fr.covered = flush_final;
     fr.text = fr.covered ? last_hyp_ : std::string();
     fr.last_hyp = last_hyp_;
     fr.anchors = anchors_;
@@ -2212,14 +2211,13 @@ class StreamingAsrTrack {
     while (finalize_.Pop(&fr)) DoFinalize(fr);
   }
 
-  // Page-fast path: the last hypothesis carries all but the final word or
-  // two; publish it as a provisional final row immediately (the page
-  // re-renders the same row when the complete text lands ~0.5-1 s later).
-  // The authoritative transcript file is still written only from the
-  // complete pass.  On the http backend every epoch close blocks the poll
-  // pipe for one whole-window transcribe, so the alternative is the row
-  // appearing only after that round trip.
-  void EmitEarlyFinal(FinalizeRequest& fr) {
+  // (Removed: an early-final event published the last hypothesis as a
+  // provisional row at epoch close.  The page's row model expects ONE final
+  // per epoch; the second, complete final showed up as a duplicate row
+  // instead of revising the first.  The live caption already provides the
+  // early text view; the definitive low-latency path is the worker
+  // backend - see docs/stream-asr-worker-protocol.md.)
+  [[maybe_unused]] void EmitEarlyFinal(FinalizeRequest& fr) {
     if (fr.last_hyp.empty() || !speakers_) return;
     const std::size_t covered_end = std::min(fr.e, speakers_->Committed());
     std::string spk;
@@ -2238,7 +2236,6 @@ class StreamingAsrTrack {
   void DoFinalize(FinalizeRequest& fr) {
     const auto t0 = std::chrono::steady_clock::now();
     std::string text = fr.text;
-    if (text.empty() && !fr.covered) EmitEarlyFinal(fr);
     if (text.empty() && session_ && !fr.window.empty())
       text = session_->Transcribe(fr.window);
     const auto t1 = std::chrono::steady_clock::now();
