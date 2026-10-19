@@ -303,9 +303,14 @@ function typeCaption(ln, text){
     if (!ln.div.isConnected) return;
     const cur = ln.solid.textContent;
     if (!ln._target.startsWith(cur)) { ln.solid.textContent = ln._target; return; }
-    if (cur.length < ln._target.length) {
+    const backlog = ln._target.length - cur.length;
+    if (backlog > 0) {
+      // Speech rhythm: ~60 ms/char so typing breathes with the partial
+      // cadence; accelerate only when a burst is piling up (run start,
+      // reconnect replay) so the caption never lags the audio.
+      const pace = backlog > 24 ? 10 : backlog > 10 ? 24 : 60;
       ln.solid.textContent = ln._target.slice(0, cur.length + 1);
-      ln._typer = setTimeout(step, 14);
+      ln._typer = setTimeout(step, pace);
     }
   };
   step();
@@ -449,15 +454,22 @@ $('startBtn').onclick = async () => {
   // 1) tell the board to start FIRST: model loading begins immediately
   const startP = fetch('/start?input=' + encodeURIComponent(input) + '&onset=' + $('onset').value + '&maxseg=' + $('maxseg').value + '&psplit=' + $('psplit').value + '&preview=' + $('preview').value + '&trail=' + $('trail').value + '&tick=' + $('tick').value, {method: 'POST'})
     .then(r => r.json()).catch(() => ({ok: false, msg: '启动请求失败'}));
+  // The audio download runs in parallel with /start so a large input (2P,
+  // 31 MB) overlaps the pipeline's model loading instead of stacking after it.
+  const audioP = fetch('/audio?input=' + encodeURIComponent(input))
+    .then(r => r.arrayBuffer()).catch(e => { console.warn('audio', e); return null; });
   // 2) once /start confirms, attach SSE right away: the「加载模型中… X s」
   //    status shows while the audio is still being fetched below.
   const j = await startP;
   if (j.ok) connect();
   // 3) fetch the audio ONCE; reuse it for playback (blob) and the waveform.
+  //    (The audioP below is started together with /start, so a large input's
+  //    download overlaps the pipeline's model loading instead of stacking
+  //    after it.)
   //    (Uploaded audio is always re-fetched: decodeAudioData detaches the
   //    ArrayBuffer we sent to the server, so the cached copy is unusable.)
   let buf = null;
-  try { buf = await (await fetch('/audio?input=' + encodeURIComponent(input))).arrayBuffer(); } catch (e) { console.warn('audio', e); }
+  try { buf = await audioP; } catch (e) { console.warn('audio', e); }
   if (auURL) URL.revokeObjectURL(auURL);
   if (buf) {
     auURL = URL.createObjectURL(new Blob([buf], {type: 'audio/wav'}));
@@ -468,7 +480,13 @@ $('startBtn').onclick = async () => {
       // The pipeline started while the (large) audio was still fetching.
       // Play for real - the muted unlock play's pause() would otherwise
       // race this call and silence the run (2P vs vad_example difference).
+      // Drop in at the current timeline position so the sound stays in
+      // sync with the captions (the opening seconds are simply skipped).
       au.muted = $('mute').checked;
+      try {
+        const at = now();
+        if (at > 0.5 && isFinite(au.duration) && at < au.duration) au.currentTime = at;
+      } catch (e) { /* seek best-effort */ }
       au.play().catch(() => {});
       S.pendingPlay = false;
     } else {

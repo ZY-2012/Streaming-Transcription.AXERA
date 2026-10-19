@@ -1537,7 +1537,7 @@ class HttpAsrSession : public StreamingAsrSession {
     // one paying the 260 MB NFS read (~60 s on a cold server).
     {
       const std::vector<int16_t> silence(1600, 0);
-      if (Post(silence).empty())
+      if (Post(silence, "warm").empty())
         std::cerr << "[asr-stream] warmup POST failed (will retry on first poll)\\n";
     }
     poller_ = std::thread([this] { PollerLoop(); });
@@ -1568,7 +1568,7 @@ class HttpAsrSession : public StreamingAsrSession {
       std::lock_guard<std::mutex> lock(mutex_);
       busy_ = true;   // the poller skips its cadence while a final is in flight
     }
-    const std::string text = Post(window);
+    const std::string text = Post(window, "final");
     {
       std::lock_guard<std::mutex> lock(mutex_);
       busy_ = false;
@@ -1605,6 +1605,11 @@ class HttpAsrSession : public StreamingAsrSession {
         std::lock_guard<std::mutex> lock(mutex_);
         if (stop_) return;
       }
+      // (An earlier revision accelerated the cadence while the buffer tail
+      // was quiet, hoping to make the epoch-close covered check fire; a
+      // POST round trip is 0.4-0.9 s against a 0.3 s close window, so the
+      // freshest partial can never cover the voiced end in time.  It only
+      // added NPU load and queued behind the final transcribe.)
       std::this_thread::sleep_for(std::chrono::milliseconds(poll_ms_));
       std::vector<int16_t> snap;
       {
@@ -1612,24 +1617,35 @@ class HttpAsrSession : public StreamingAsrSession {
         if (busy_ || buffer_.size() < min_samples) continue;
         snap = buffer_;
       }
-      const std::string text = Post(snap);
-      if (text.empty() || text == last_text) continue;
-      last_text = text;
+      const std::string text = Post(snap, "poll");
+      if (text.empty()) continue;
       std::lock_guard<std::mutex> lock(mutex_);
+      // Publish every result: the coverage must advance even when the text
+      // is unchanged (a pause grows the window without new words) or the
+      // epoch-close covered check would keep firing the whole-window
+      // transcribe.  fresh only marks text the track has not merged yet.
       partial_.text = text;
       partial_.coverage = snap.size();
-      partial_.fresh = true;
+      if (text != last_text) partial_.fresh = true;
+      last_text = text;
     }
   }
 
-  std::string Post(const std::vector<int16_t>& pcm) {
+  // `tag` separates concurrent callers' temp files: the poller ("poll") and
+  // the finalize transcribe ("final") upload simultaneously near epoch
+  // closes; sharing one path let one rewrite the WAV while the other was
+  // mid-upload, hanging the server read until curl's max-time and freezing
+  // the poller thread for the rest of the run (measured: partials stop
+  // ~30 s in, no anchors, final transcribe every epoch).
+  std::string Post(const std::vector<int16_t>& pcm, const char* tag) {
     if (pcm.empty()) return "";
-    const fs::path wav = fs::path(work_dir_) / "asr-req.wav";
+    std::lock_guard<std::mutex> post_lock(post_mutex_);
+    const fs::path wav = fs::path(work_dir_) / ("asr-req-" + std::string(tag) + ".wav");
     if (!WriteWav(wav, pcm, kRateOut)) {
       std::cerr << "[asr-stream] request WAV failed\\n";
       return "";
     }
-    const fs::path resp = fs::path(work_dir_) / "asr-req.json";
+    const fs::path resp = fs::path(work_dir_) / ("asr-req-" + std::string(tag) + ".json");
     std::string cmd = "curl -sf --max-time 150 -X POST";
     cmd += " -F " + ShellQuote("file=@" + wav.string());
     cmd += " -F " + ShellQuote("model=" + cfg_.model_name);
@@ -1660,7 +1676,11 @@ class HttpAsrSession : public StreamingAsrSession {
   int in_fd_ = -1;
   pid_t pid_ = -1;
   std::thread poller_;
-  mutable std::mutex mutex_;
+  mutable std::mutex mutex_;       // buffer_/partial_ state
+  std::mutex post_mutex_;          // serializes POSTs: the server runs one
+                                    // model, concurrent uploads queue there and
+                                    // double every round trip (measured 0.6-1.0
+                                    // s vs ~0.4 s solo)
   std::vector<int16_t> buffer_;   // epoch audio (cleared by Discard)
   PartialResult partial_;         // latest hypothesis from the poller
   bool busy_ = false, stop_ = false;
@@ -1719,12 +1739,12 @@ class StdioWorkerSession : public StreamingAsrSession {
 
   PartialResult RequestPartial() override {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!partial_fresh_) return PartialResult{};
+    if (partial_.empty()) return PartialResult{};
     PartialResult out;
     out.text = partial_;
     out.coverage = fed_;
-    out.fresh = true;
-    partial_fresh_ = false;
+    out.fresh = partial_fresh_;
+    partial_fresh_ = false;   // the track reads each result once
     return out;
   }
 
@@ -1974,6 +1994,7 @@ class StreamingAsrTrack {
 
   // One closed epoch handed from the audio thread to the worker thread.
   struct FinalizeRequest {
+    std::chrono::steady_clock::time_point enqueued{};
     std::size_t b = 0, e = 0;      // epoch_start_, voiced_end_ (absolute)
     bool covered = false;          // final text already in `text`
     std::vector<int16_t> window;   // epoch audio (for Transcribe/refine)
@@ -2042,9 +2063,10 @@ class StreamingAsrTrack {
   void ConsumePartial() {
     if (!session_ || !in_epoch_) return;
     const PartialResult pr = session_->RequestPartial();
-    if (!pr.fresh || pr.text.empty()) return;
+    if (pr.text.empty()) return;
     const std::size_t coverage = epoch_start_ + pr.coverage;
-    last_poll_coverage_ = coverage;
+    if (coverage > last_poll_coverage_) last_poll_coverage_ = coverage;
+    if (!pr.fresh) return;   // no new text; the coverage advance is all
     MergeHypothesis(pr.text, coverage);
   }
 
@@ -2147,6 +2169,7 @@ class StreamingAsrTrack {
     in_epoch_ = false;
     const bool voiced_enough = voiced_ >= min_voiced_ * 3 / 5;
     FinalizeRequest fr;
+    fr.enqueued = std::chrono::steady_clock::now();
     fr.b = epoch_start_;
     fr.e = voiced_end_;
     // The worker backend flushes its session tail at Discard; the final text
@@ -2189,10 +2212,36 @@ class StreamingAsrTrack {
     while (finalize_.Pop(&fr)) DoFinalize(fr);
   }
 
+  // Page-fast path: the last hypothesis carries all but the final word or
+  // two; publish it as a provisional final row immediately (the page
+  // re-renders the same row when the complete text lands ~0.5-1 s later).
+  // The authoritative transcript file is still written only from the
+  // complete pass.  On the http backend every epoch close blocks the poll
+  // pipe for one whole-window transcribe, so the alternative is the row
+  // appearing only after that round trip.
+  void EmitEarlyFinal(FinalizeRequest& fr) {
+    if (fr.last_hyp.empty() || !speakers_) return;
+    const std::size_t covered_end = std::min(fr.e, speakers_->Committed());
+    std::string spk;
+    if (covered_end > fr.b) {
+      const auto resolved = ResolveSpeakerSegments(speakers_->Timeline(), fr.b, covered_end);
+      spk = resolved.size() == 1 ? resolved.front().speaker_id
+                                 : DominantSpeaker(speakers_->Timeline(), fr.b, covered_end);
+    }
+    EventLog::Get().Write("final",
+        "\"b\":" + EventLog::Sec(fr.b, kRateOut) +
+        ",\"e\":" + EventLog::Sec(fr.e, kRateOut) +
+        ",\"spk\":" + EventLog::Quote(spk) +
+        ",\"text\":" + EventLog::Quote(fr.last_hyp));
+  }
+
   void DoFinalize(FinalizeRequest& fr) {
+    const auto t0 = std::chrono::steady_clock::now();
     std::string text = fr.text;
+    if (text.empty() && !fr.covered) EmitEarlyFinal(fr);
     if (text.empty() && session_ && !fr.window.empty())
       text = session_->Transcribe(fr.window);
+    const auto t1 = std::chrono::steady_clock::now();
     if (text.empty() && session_) text = session_->TakeFinal();
     if (refine_ && asr_ && !fr.window.empty()) {
       auto lease = arbiter_->Acquire();
@@ -2205,6 +2254,14 @@ class StreamingAsrTrack {
     }
     if (text.empty() || text.rfind("[ASR_ERROR]", 0) == 0) text = fr.last_hyp;
     if (!text.empty()) EmitFinal(text, fr);
+    const auto t2 = std::chrono::steady_clock::now();
+    auto ms = [](auto a, auto b) {
+      return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
+    };
+    std::cerr << "[asr-final] epoch=[" << fr.b << "," << fr.e << "] covered=" << fr.covered
+              << " queue_ms=" << ms(fr.enqueued, t0)
+              << " transcribe_ms=" << ms(t0, t1)
+              << " diar_ms=" << ms(t1, t2) << "\n";
   }
 
   struct Piece {
@@ -2259,7 +2316,17 @@ class StreamingAsrTrack {
     const std::size_t b = fr.b, e = fr.e;
     std::vector<Segment::Part> parts;
     if (speakers_) {
-      if (!speakers_->Finished())
+      const std::size_t committed = speakers_->Committed();
+      // Fast path: when the already-covered prefix resolves to a single
+      // speaker, the epoch's label is settled for all but the last ~0.5 s
+      // (the diarization look-behind); a turn change inside that tail is
+      // attributed to the NEXT epoch anyway, so skip the timeline wait.
+      // Only epochs whose covered prefix already shows a turn change need
+      // the full coverage for the split.
+      const std::size_t covered_end = std::min(e, committed);
+      const bool fast_path = covered_end > b &&
+          ResolveSpeakerSegments(speakers_->Timeline(), b, covered_end).size() < 2;
+      if (!speakers_->Finished() && !fast_path)
         speakers_->WaitCovered(e, std::chrono::milliseconds(label_wait_ms_));
       parts = speakers_->Timeline();
     }
