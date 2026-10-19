@@ -9,6 +9,9 @@ AX650N 上的**真流式**会议转录 demo：与兄弟工程
 **说话人标签延迟 ~1 s**，轮次稳定即输出 `Speaker_k [起 止] 文本`。
 
 - [x] 端到端流式说话人分离（增量 10 ms 帧、最多 8 人、支持重叠语音）
+- [x] **流式 ASR 可选**（`asr.mode: streaming`）：连续喂入流式 SenseVoice，
+      切分只发生在停顿/换人处（不再按 VAD 段硬切、无词中断字）；
+      `offline` 保持原逐段识别路径
 - [x] 轮次式真流式转录：时间线覆盖到哪、带说话人的句子就出到哪
 - [x] WAV 文件模拟麦克风（file-realtime）或 ALSA 实时采集
 - [x] 流式 worker 与文件模式逐位对齐（对分测试 + 板端 A/B 验证）
@@ -56,7 +59,7 @@ Streaming-Transcription.AXERA/
 
 | 模块 | 模型 | 下载 |
 |------|------|------|
-| ASR | SenseVoice | [AXERA-TECH/models-for-asr-chain](https://huggingface.co/AXERA-TECH/models-for-asr-chain) → `asr/sensevoice` |
+| ASR | SenseVoice（离线+流式 NPU2） | [AXERA-TECH/models-for-asr-chain](https://huggingface.co/AXERA-TECH/models-for-asr-chain) → `asr/sensevoice`；流式版 `streaming_sensevoice.axmodel` 来自 [HY-2012/Tmp_Models](https://huggingface.co/HY-2012/Tmp_Models)（配套 `driver/asr/sensevoice/bin/asr_server`） |
 | VAD | TEN-VAD | 同上 → `vad/ten-vad` |
 | 降噪 | FastEnhance | 同上 → `ns/fastenhance` |
 | 说话人分离 | Nemotron-3（端到端流式） | [HY-2012/Nemotron-3-Diarization.AXERA](https://huggingface.co/HY-2012/Nemotron-3-Diarization.AXERA) → `models/` |
@@ -189,7 +192,41 @@ response : 帧 = type + uint32 len + payload（默认 fd 3）
 （与 pyannote session 时间线同接口），轮次被时间线覆盖即刻调 SenseVoice
 出句——这就是"真流式"的端到端路径。
 
-## 8. 结果与验证
+## 8. 流式 ASR（`asr.mode: streaming`）
+
+文本层从"按 VAD 段切好再识别"改为**连续流式**：
+
+- 16 kHz 音频逐 hop 喂给流式 SenseVoice 会话（26 帧滚动窗，NPU2 版
+  `streaming_sensevoice.axmodel`），识别不再看任何被硬切的窗口——
+  切分处的糊字/丢字问题从根上消除；
+- 停顿 ≥ `asr.streaming.epoch_pause_seconds`（默认 0.3 s，词安全）成段为
+  一行；每 ~0.8 s 取增量文本，标点宽松 LocalAgreement-2 确认稳定前缀
+  （`stext` 事件，带临时说话人）；
+- 行闭合时用 Nemotron 时间线归属说话人（整段主导说话人，或
+  `split_turns: true` 时在轮次边界切开逐段归属），写入
+  `transcript.txt` 并发 `final` 事件；
+- `asr.refine: epoch` 可选：行闭合时用离线模型再识别一遍作权威稿。
+
+配置要点：
+
+```yaml
+asr:
+  mode: streaming          # streaming | offline（默认保持离线路径）
+  streaming:
+    backend: http          # http = 板载 asr_server（随包附带）；worker = 常驻
+                           # 流式 worker（协议 docs/stream-asr-worker-protocol.md，
+                           # 待配套二进制，延迟更低）
+    poll_seconds: 0.8      # 增量文本节拍
+    epoch_pause_seconds: 0.3
+    split_turns: false
+```
+
+> **VNPU 模式**：启用流式 ASR 后主管线以 **VNPU DISABLE（统一 NPU）** 优先
+> （失败自动回退 BIG_LITTLE），因为 asr_server 只会以 DISABLE 初始化；
+> 全链模型均为 NPU1/NPU2 编译、DISABLE 下全部可加载，任意启动顺序均共存。
+> 两个后端二进制（asr_server / test_sensevoice）已静态链接 AX 运行时。
+
+## 9. 结果与验证
 
 - AX650N 文件模式（上游实测）：lowlat 档 C++ RTF 0.179、85.9 ms/步，
   AMI DER 29.08%（vs NeMo FP32 +0.80pp）；worker 与文件模式输出逐位一致。
@@ -198,7 +235,7 @@ response : 帧 = type + uint32 len + payload（默认 fd 3）
 - 待板端实测（NPU2 模型到位后）：说话人标签端到端延迟、轮次出句延迟、
   NPU 占用、DER/轮次与 pyannote online 模式对比。
 
-## 9. 参考
+## 10. 参考
 
 - [nvidia/Nemotron-3-Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization)（NVIDIA Open Model License）
 - [Nemotron-3-Diarization.AXERA](https://github.com/ZY-2012/Nemotron-3-Diarization.AXERA)
@@ -207,7 +244,7 @@ response : 帧 = type + uint32 len + payload（默认 fd 3）
   （本工程音频链路的派生来源）
 - [SenseVoice](https://github.com/FunAudioLLM/SenseVoice)、[TEN-VAD](https://github.com/TEN-framework/ten-vad)
 
-## 10. 技术讨论
+## 11. 技术讨论
 
 - GitHub issues
 - QQ 群: 139953715
