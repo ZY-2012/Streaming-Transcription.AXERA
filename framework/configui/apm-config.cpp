@@ -497,7 +497,7 @@ bool LoadAppConfig(const std::string& path,
       "asr.streaming.language", "asr.streaming.poll_seconds", "asr.streaming.confirm",
       "asr.streaming.epoch_cap_seconds", "asr.streaming.epoch_pause_seconds",
       "asr.streaming.label_wait_seconds",
-      "asr.streaming.split_turns",
+      "asr.streaming.split_turns", "asr.streaming.turn_shift_seconds",
       "output.temp_dir", "output.text_file", "output.mp3_dir",
       "output.max_mp3_storage_mb", "output.mp3_encoder",
       "runtime.input", "runtime.input_wav", "runtime.file_input_mode",
@@ -622,6 +622,7 @@ bool LoadAppConfig(const std::string& path,
   GET_NUM("asr.streaming.epoch_pause_seconds", c->asr.streaming.epoch_pause_seconds);
   GET_NUM("asr.streaming.label_wait_seconds", c->asr.streaming.label_wait_seconds);
   GET_BOOL("asr.streaming.split_turns", c->asr.streaming.split_turns);
+  GET_NUM("asr.streaming.turn_shift_seconds", c->asr.streaming.turn_shift_seconds);
   GET_STRING("asr.model_path", c->asr.model_path);
   GET_STRING("asr.model_type", c->asr.model_type);
   GET_STRING("asr.language", c->asr.language);

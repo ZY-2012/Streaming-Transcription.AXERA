@@ -1975,6 +1975,7 @@ class StreamingAsrTrack {
                     Npu2CellArbiter* arbiter)
       : refine_(c.asr.refine == "epoch"),
         split_turns_(c.asr.streaming.split_turns),
+        turn_shift_(c.asr.streaming.turn_shift_seconds),
         confirm_immediate_(c.asr.streaming.confirm != "agreement"),
         pause_close_(std::max<size_t>(1, static_cast<size_t>(
             c.asr.streaming.epoch_pause_seconds * kRateOut))),
@@ -2325,12 +2326,27 @@ class StreamingAsrTrack {
     if (resolved.size() < 2) return {};
     std::vector<std::size_t> cuts, raw;
     const auto offsets = textutil::ContentOffsets(text);
+    // The streaming diarizer's label lag puts timeline turn boundaries
+    // ~0.5 s late; shift them earlier before interpolating so the first
+    // words of the next speaker's turn stop landing on the previous
+    // speaker (measured on both demo clips: "啊是这样的话" opens speaker_0's
+    // turn, "好非常感谢" belongs to speaker_1).
+    const std::size_t shift = static_cast<std::size_t>(turn_shift_ * kRateOut);
     for (std::size_t i = 1; i < resolved.size(); ++i) {
-      const std::size_t idx = textutil::CharsAt(anchors, resolved[i].begin);
+      const std::size_t t =
+          resolved[i].begin > b + shift ? resolved[i].begin - shift : b;
+      const std::size_t idx = textutil::CharsAt(anchors, t, b);
       raw.push_back(idx);
       // The char<->time map is coarse (one point per poll); snap the cut to
       // the nearest punctuation boundary so pieces break between words.
-      cuts.push_back(textutil::SnapToPunct(text, offsets, idx, 5));
+      const std::size_t cut = textutil::SnapToPunct(text, offsets, idx, 5);
+      if (cut == 0 || cut >= offsets.size() ||
+          (!cuts.empty() && cut <= cuts.back())) {
+        std::cerr << "[asr-split] degenerate cut " << cut << " (raw " << idx
+                  << ") - falling back to dominant\n";
+        return {};
+      }
+      cuts.push_back(cut);
     }
     {
       std::string a;
@@ -2438,6 +2454,7 @@ class StreamingAsrTrack {
 
   const bool refine_;
   const bool split_turns_;
+  const float turn_shift_;
   const bool confirm_immediate_;
   const std::size_t pause_close_, epoch_cap_;
   const int label_wait_ms_;

@@ -168,6 +168,25 @@ inline size_t CharsAt(const std::vector<CharTimeAnchor>& anchors, size_t t) {
                                       static_cast<double>(b.chars - a.chars));
 }
 
+// Same map, but `origin` (the epoch start, where the text holds 0 content
+// chars) seeds a linear head estimate below the first anchor.  Turn
+// boundaries often fall before a short epoch's first anchor; the plain
+// CharsAt clamps them to 0 and the split sees no cut at all.
+inline size_t CharsAt(const std::vector<CharTimeAnchor>& anchors, size_t t,
+                      size_t origin) {
+  if (anchors.empty()) return 0;
+  if (t <= origin) return 0;
+  if (t <= anchors.front().pos) {
+    const size_t p = anchors.front().pos;
+    if (p <= origin) return 0;
+    const double frac = static_cast<double>(t - origin) /
+                        static_cast<double>(p - origin);
+    return static_cast<size_t>(frac *
+                               static_cast<double>(anchors.front().chars));
+  }
+  return CharsAt(anchors, t);
+}
+
 // Split `s` at the given sorted content-char indices (each index is the
 // first character of the next piece; 0 and the total are ignored).
 inline std::vector<std::string> SplitAt(const std::string& s,

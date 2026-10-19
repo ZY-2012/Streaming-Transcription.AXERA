@@ -115,6 +115,7 @@ asr:
     epoch_pause_seconds: 0.3  # 静音成段阈值：越小行越碎延迟越低，越大行越长
     label_wait_seconds: 3.0  # 轮次闭合等说话人时间线覆盖的最长时间
     split_turns: true        # 轮内文本在说话人切换处切开逐段归属（换人处无停顿时避免主导说话人吞掉整段）
+    turn_shift_seconds: 0.55  # 分离时间线的换人边界前移量（流式分离模型 label 滞后约 0.5s，不前移会把下一说话人的开头词划给前一人）
   model_path: models-for-asr-chain/asr
   model_type: sensevoice
   language: zh

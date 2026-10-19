@@ -305,6 +305,11 @@ struct AppConfig {
       // char<->time map is coarse; off = whole epoch carries its dominant
       // speaker).
       bool split_turns = false;
+      // Shift diarization turn boundaries earlier by this many seconds
+      // before the char<->time interpolation: the streaming diarizer's
+      // label lag makes timeline boundaries ~0.5 s late, which handed the
+      // first word(s) of the next speaker's turn to the previous speaker.
+      float turn_shift_seconds = 0.55f;
     };
     Streaming streaming;
   } asr;

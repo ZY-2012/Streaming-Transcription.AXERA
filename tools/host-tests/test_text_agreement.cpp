@@ -98,6 +98,21 @@ void TestCharsAt() {
   check(CharsAt({}, 12345) == 0, "empty anchors");
 }
 
+void TestCharsAtOrigin() {
+  // Head extrapolation: 0 chars at the epoch origin, first anchor 5@40448
+  // (the 2P opening epoch b=27904).  A turn boundary before the first
+  // anchor must interpolate instead of clamping to 0.
+  std::vector<CharTimeAnchor> anchors{{5, 40448}, {8, 56576}};
+  check(CharsAt(anchors, 27904, 27904) == 0, "at origin");
+  check(CharsAt(anchors, 26000, 27904) == 0, "before origin");
+  // (40000-27904)/(40448-27904) * 5 = 4.83 -> 4
+  check(CharsAt(anchors, 40000, 27904) == 4, "head extrapolation");
+  check(CharsAt(anchors, 40448, 27904) == 5, "at first anchor");
+  // above the first anchor behaves like the plain map
+  check(CharsAt(anchors, 48000, 27904) == 6, "past first anchor");
+  check(CharsAt(anchors, 99999, 27904) == 8, "clamped at last");
+}
+
 }  // namespace
 
 int main() {
@@ -105,6 +120,7 @@ int main() {
   TestOffsetsAndSplit();
   TestSnapToPunct();
   TestCharsAt();
+  TestCharsAtOrigin();
   if (failures == 0) {
     std::printf("text agreement: OK\n");
     return 0;
