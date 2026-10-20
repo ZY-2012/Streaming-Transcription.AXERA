@@ -1,6 +1,6 @@
 # Streaming-Transcription.AXERA
 
-AX650N 上的**真流式**会议转录：说话的同时字幕逐字出现（滞后 ~0.1 s）、
+AX650N 上的**流式**会议转录：说话的同时字幕逐字出现（滞后 ~0.1 s）、
 说话人标签随时间线增量产出（~0.5 s）、每轮结束后输出带标点的权威定稿
 （0.6–1.0 s）。端到端流式分离模型
 [Nemotron-3-Diarization](https://huggingface.co/HY-2012/Nemotron-3-Diarization.AXERA)
