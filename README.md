@@ -6,6 +6,10 @@ AX650N 上的**流式**会议转录：说话的同时字幕逐字出现（滞后
 [Nemotron-3-Diarization](https://huggingface.co/HY-2012/Nemotron-3-Diarization.AXERA)
 + 流式 SenseVoice，附网页实时演示，照本文步骤可直接复现。
 
+## 演示效果
+
+![网页实时转写演示](results/demo.gif)
+
 ## 1. 核心能力
 
 - 连续流式 ASR：26 帧滚动窗口持续解码，不等句子说完，切分只发生在停顿处
